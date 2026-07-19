@@ -1,0 +1,17 @@
+{
+  "type": "minecraft:crafting_shaped",
+  "category": "misc",
+  "pattern": [
+    "PCP",
+    "WWW"
+  ],
+  "key": {
+    "P": { "item": "minecraft:paper" },
+    "C": { "item": "minecraft:compass" },
+    "W": { "tag": "minecraft:planks" }
+  },
+  "result": {
+    "id": "territory:territory_table",
+    "count": 1
+  }
+}

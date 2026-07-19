@@ -1,0 +1,51 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.moddev' version '2.0.141'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = "${mod_id}-neoforge"
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+repositories {
+    mavenCentral()
+}
+
+neoForge {
+    version = neoforge_version
+    mods {
+        efwarborn {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // Provided at runtime by the host jar (Easy Factions port) and the server (SDM Economy).
+    // Compile-only: we never bundle these; the merged release jar already contains Easy Factions,
+    // and SDM is an optional soft dependency reached only when present.
+    compileOnly files('libs/easy_factions-NeoForge-1.0.0.jar')
+    compileOnly files('libs/sdmeconomy-neoforge-1.21.1-2.4.0.jar')
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var props = [
+            minecraft_version_range: minecraft_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    inputs.properties props
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand props
+    }
+}

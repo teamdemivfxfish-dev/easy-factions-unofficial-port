@@ -1,0 +1,52 @@
+plugins {
+    id 'java'
+    id 'net.neoforged.moddev' version '2.0.141'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = "${mod_id}-neoforge"
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+}
+
+repositories {
+    mavenCentral()
+}
+
+neoForge {
+    version = neoforge_version
+    mods {
+        territory {
+            sourceSet sourceSets.main
+        }
+    }
+}
+
+dependencies {
+    // Easy Factions provides the claim + faction API at runtime; compileOnly because it is a SEPARATE
+    // jar (this mod is GPLv3 and is NOT bundled into the MPL Easy Factions jar). Players install both.
+    compileOnly files('libs/easy_factions-NeoForge-1.0.0.jar')
+    // SDM Economy is the default currency for the "Buy Claims" button (optional soft-dep). compileOnly:
+    // never bundled, only touched after ModList.isLoaded("sdmeconomy"); absent -> emerald fallback.
+    compileOnly files('libs/sdmeconomy-neoforge-1.21.1-2.4.0.jar')
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    var props = [
+            minecraft_version_range: minecraft_version_range,
+            mod_id                 : mod_id,
+            mod_name               : mod_name,
+            mod_version            : mod_version,
+            mod_authors            : mod_authors,
+            mod_description        : mod_description,
+    ]
+    inputs.properties props
+    filesMatching(['META-INF/neoforge.mods.toml']) {
+        expand props
+    }
+}
