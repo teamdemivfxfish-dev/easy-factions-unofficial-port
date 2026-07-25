@@ -38,6 +38,15 @@ public final class TerritoryConfig {
     /** Seconds between regeneration steps that refund one lost slot to every penalised faction. */
     public static final ModConfigSpec.IntValue PENALTY_REGEN_SECONDS;
 
+    /** Whether being killed also costs a player personal (non-faction) claim capacity. */
+    public static final ModConfigSpec.BooleanValue PERSONAL_CONQUEST_ENABLED;
+    /** Personal claim slots the victim loses per kill. */
+    public static final ModConfigSpec.IntValue PERSONAL_CLAIMS_LOST_PER_KILL;
+    /** Seconds it takes to win back ONE lost personal claim slot. */
+    public static final ModConfigSpec.IntValue PERSONAL_REGEN_SECONDS;
+    /** Whether founding a faction turns the founder's personal claims into faction claims. */
+    public static final ModConfigSpec.BooleanValue LEADER_CLAIMS_BECOME_FACTION;
+
     /** Default border colour for a newly painted admin territory. */
     public static final ModConfigSpec.IntValue ADMIN_DEFAULT_COLOR;
     /** Require creative mode, on top of operator, before admin claiming is offered. */
@@ -112,6 +121,35 @@ public final class TerritoryConfig {
                         "worked off in 100 minutes. Set to 0 to make losses permanent.")
                 .defineInRange("penaltyRegenSeconds", 600, 0, 1_000_000);
 
+        PERSONAL_CONQUEST_ENABLED = b
+                .comment("Being killed by another player also costs PERSONAL claim capacity.",
+                        "This is the solo player's version of the faction tug of war: you do not need a",
+                        "faction to have land worth defending, or to lose it.",
+                        "While you are still under your personal cap you only lose a slot you were not using",
+                        "yet; once the cap drops below what you hold, the chunk nearest where you died is",
+                        "released.")
+                .define("personalConquestEnabled", true);
+
+        PERSONAL_CLAIMS_LOST_PER_KILL = b
+                .comment("Personal claim slots the victim loses per kill.")
+                .defineInRange("personalClaimsLostPerKill", 1, 0, 1_000);
+
+        PERSONAL_REGEN_SECONDS = b
+                .comment("Seconds to win back ONE lost personal claim slot.",
+                        "Default 600 = one chunk back every 10 minutes, so a player ground down from the",
+                        "usual nine is whole again in an hour and a half. Set to 0 to make the losses",
+                        "permanent.")
+                .defineInRange("personalRegenSeconds", 600, 0, 1_000_000);
+
+        LEADER_CLAIMS_BECOME_FACTION = b
+                .comment("Founding a faction turns the founder's personal claims into faction claims.",
+                        "The leader then claims for the faction instead of for himself: his land IS the",
+                        "faction's land, which is what his members are fighting to extend and defend.",
+                        "Only the leader is affected - ordinary members keep their own personal claims.",
+                        "If the faction is disbanded the ex-leader gets personal claims back, but never more",
+                        "than the personal cap allows; the rest of the land is released.")
+                .define("leaderClaimsBecomeFaction", true);
+
         ADMIN_DEFAULT_COLOR = b
                 .comment("Default border colour for a newly painted admin territory, as a packed RGB integer.",
                         "Default 0xC056C0 (purple). Admins may override this per territory in the GUI.")
@@ -143,6 +181,16 @@ public final class TerritoryConfig {
     public static int killerSharePercent() { return KILLER_SHARE_PERCENT.get(); }
     public static int adminDefaultColor() { return ADMIN_DEFAULT_COLOR.get() & 0xFFFFFF; }
     public static boolean adminRequiresCreative() { return ADMIN_REQUIRES_CREATIVE.get(); }
+
+    public static boolean personalConquestEnabled() { return PERSONAL_CONQUEST_ENABLED.get(); }
+    public static int personalClaimsLostPerKill() { return PERSONAL_CLAIMS_LOST_PER_KILL.get(); }
+    public static boolean leaderClaimsBecomeFaction() { return LEADER_CLAIMS_BECOME_FACTION.get(); }
+
+    /** Personal regeneration interval in server ticks, or 0 when losses are configured to be permanent. */
+    public static int personalRegenTicks() {
+        long ticks = PERSONAL_REGEN_SECONDS.get() * 20L;
+        return (int) Math.min(Integer.MAX_VALUE, ticks);
+    }
 
     /** Regeneration interval in server ticks, or 0 when losses are configured to be permanent. */
     public static int penaltyRegenTicks() {

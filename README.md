@@ -29,6 +29,16 @@ This is an unofficial port. It is not affiliated with or endorsed by the upstrea
 
 `territory` is a NeoForge 1.21.1 revival of MineTerritory, reworked to read claims from Easy Factions rather than banner power. It adds the Territory Table block and its claim-map screen, named and coloured admin territories, a minimum-member gate on faction claiming, and a kill-costs-capacity conquest system.
 
+### Personal claim protection
+
+Two things worth flagging to anyone reading this code, because both are behaviours of the upstream claim handler rather than of this port.
+
+`ClaimEventHandler.playerHasPermission` decides a CORE (personal) claim by checking whether the chunk belongs to the claim's owner, which is true for any claimed chunk, instead of comparing the owner against the player performing the action. The effect is that personal claims permit every player to do everything in them. Faction and admin claims are not affected. This port compensates from the outside, in `territory`'s `ClaimProtectionHandler`, which runs after the upstream handler and refuses interactions by anyone who is not the claim's owner. Which interactions are protected at all is still decided by the upstream `coreClaimRestrictions` config, and operators still bypass it.
+
+`ClaimManager.deleteFactionData` removes a disbanded faction from its index maps but leaves that faction's entries in the claim map. Since no player's faction name can match a faction that no longer exists, those chunks stay protected against everyone with no way to release them. This port releases them explicitly when a faction is disbanded.
+
+Both are described here so the behaviour is visible to anyone maintaining the upstream project.
+
 ### Note on the `easy_factions` port sources
 
 The port of Easy Factions itself was carried out by a collaborator, and those sources are being collected from them for publication here. They are not yet in this repository. This is a gap on our side, not a refusal, and it will be filled in.

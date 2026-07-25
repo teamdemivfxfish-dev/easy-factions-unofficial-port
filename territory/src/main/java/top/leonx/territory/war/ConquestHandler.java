@@ -37,15 +37,50 @@ public final class ConquestHandler {
     public static void onDeath(LivingDeathEvent event) {
         if (!(event.getEntity() instanceof ServerPlayer victim)) return;
         if (!(event.getSource().getEntity() instanceof ServerPlayer killer)) return;
-        if (!TerritoryConfig.conquestEnabled() || !EasyFactionsBridge.loaded()) return;
+        if (!EasyFactionsBridge.loaded()) return;
 
         MinecraftServer server = victim.getServer();
         if (server == null) return;
 
-        EasyFactionsBridge.ConquestResult result = EasyFactionsBridge.applyKill(victim, killer);
-        if (!result.applied() || (result.slotsLost() == 0 && result.chunksTaken() == 0)) return;
+        if (TerritoryConfig.conquestEnabled()) {
+            EasyFactionsBridge.ConquestResult result = EasyFactionsBridge.applyKill(victim, killer);
+            if (result.applied() && (result.slotsLost() > 0 || result.chunksTaken() > 0)) announce(server, result);
+        }
 
-        announce(server, result);
+        // The solo player's version, and the one that answers "what do I lose if I have no faction?".
+        // Runs for faction members too: their faction pays in capacity AND they pay in personal land. It is
+        // skipped for a faction LEADER, whose personal claims became the faction's when he founded it.
+        if (TerritoryConfig.personalConquestEnabled()) {
+            EasyFactionsBridge.PersonalResult personal = EasyFactionsBridge.applyPersonalKill(victim, killer);
+            if (personal.applied()) announcePersonal(victim, killer, personal);
+        }
+    }
+
+    /**
+     * Told to the two players involved rather than broadcast: a one-chunk personal loss happens on every
+     * kill on the server, and putting all of that in global chat would bury the faction announcements that
+     * are actually worth reading.
+     */
+    private static void announcePersonal(ServerPlayer victim, ServerPlayer killer,
+                                         EasyFactionsBridge.PersonalResult result) {
+        StringBuilder toVictim = new StringBuilder(killer.getGameProfile().getName())
+                .append(" cost you ")
+                .append(result.slotsLost())
+                .append(result.slotsLost() == 1 ? " personal claim" : " personal claims");
+        if (result.chunksTaken() > 0) {
+            toVictim.append(", and ")
+                    .append(result.chunksTaken())
+                    .append(result.chunksTaken() == 1 ? " chunk near where you fell was" : " chunks near where you fell were")
+                    .append(" released");
+        }
+        toVictim.append(". It will come back in time.");
+        victim.sendSystemMessage(Component.literal(toVictim.toString()).withStyle(ChatFormatting.RED));
+
+        killer.sendSystemMessage(Component.literal(
+                        "You took " + result.slotsLost() + " personal "
+                                + (result.slotsLost() == 1 ? "claim" : "claims") + " from "
+                                + victim.getGameProfile().getName() + ".")
+                .withStyle(ChatFormatting.GOLD));
     }
 
     /** Tell the whole server, so land changing hands is visible and worth contesting. */
@@ -72,10 +107,15 @@ public final class ConquestHandler {
 
     @SubscribeEvent
     public static void onServerTick(ServerTickEvent.Post event) {
-        if (!TerritoryConfig.conquestEnabled() || !EasyFactionsBridge.loaded()) return;
-        int interval = TerritoryConfig.penaltyRegenTicks();
-        if (interval <= 0) return;          // losses configured to be permanent
-        EasyFactionsBridge.regenPenalties(event.getServer(), interval);
+        if (!EasyFactionsBridge.loaded()) return;
+        if (TerritoryConfig.conquestEnabled()) {
+            int interval = TerritoryConfig.penaltyRegenTicks();
+            if (interval > 0) EasyFactionsBridge.regenPenalties(event.getServer(), interval);   // 0 = permanent
+        }
+        if (TerritoryConfig.personalConquestEnabled()) {
+            int interval = TerritoryConfig.personalRegenTicks();
+            if (interval > 0) EasyFactionsBridge.regenPersonalPenalties(event.getServer(), interval);
+        }
     }
 
     /**

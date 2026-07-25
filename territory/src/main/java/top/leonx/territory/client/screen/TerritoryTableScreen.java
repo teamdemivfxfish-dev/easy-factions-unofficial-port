@@ -16,6 +16,7 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import top.leonx.territory.client.MinimapSampler;
 import top.leonx.territory.container.TerritoryTableMenu;
 import top.leonx.territory.integration.EasyFactionsBridge;
+import top.leonx.territory.network.AdminActionC2S;
 import top.leonx.territory.network.FactionActionC2S;
 import top.leonx.territory.network.FactionInfoRequestC2S;
 import top.leonx.territory.network.FactionInfoS2C;
@@ -23,6 +24,7 @@ import top.leonx.territory.network.TerritoryColorC2S;
 import top.leonx.territory.network.TerritoryCommitC2S;
 import top.leonx.territory.network.TerritoryDataS2C;
 import top.leonx.territory.network.TerritoryRequestC2S;
+import top.leonx.territory.world.AdminPerm;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -43,10 +45,13 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     public static final int TAB_MAP = 0;
     public static final int TAB_FACTION = 1;
+    /** Permissions for admin territories. Only ever shown to operators. */
+    public static final int TAB_PERMS = 2;
 
     private static final int T_PERSONAL = EasyFactionsBridge.TYPE_PERSONAL;
     private static final int T_FACTION = EasyFactionsBridge.TYPE_FACTION;
     private static final int T_ADMIN = EasyFactionsBridge.TYPE_ADMIN;
+    private static final int T_CHILD = EasyFactionsBridge.TYPE_CHILD;
 
     private static final int PANEL_BG = 0xF0140F0A;
     private static final int OUTLINE_DARK = 0xFF120D08;
@@ -67,6 +72,16 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private static final int A_FILL = 0x88000000;
     private static final int A_ADD = 0xAA40C040;
     private static final int A_REMOVE = 0x99CC4040;
+    /** Parent land while a plot is being drawn inside it: still visible, clearly not what you are editing. */
+    private static final int A_GREYED = 0x55000000;
+    /** A child plot drawn over its parent, in the plot's own colour. */
+    private static final int A_CHILD = 0x77000000;
+
+    /** Half-brightness version of a colour, for land that is greyed out rather than hidden. */
+    private static int dim(int rgb) {
+        int r = ((rgb >> 16) & 0xFF) / 2, gr = ((rgb >> 8) & 0xFF) / 2, b = (rgb & 0xFF) / 2;
+        return (r << 16) | (gr << 8) | b;
+    }
 
     private int tab = TAB_MAP;
 
@@ -85,6 +100,8 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private String lastTypedName = null;
     /** Admin territory name typed but not yet committed, kept across the server's data refreshes. */
     private String lastTypedAdminName = null;
+    /** Child plot name typed but not yet committed. Names the plot being drawn or edited. */
+    private String lastTypedChildName = null;
     /**
      * Border colour for the NEXT admin territory painted. Unlike personal/faction colours (which recolour
      * everything that owner holds the moment a swatch is clicked) this is staged and applied only to the
@@ -108,6 +125,24 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private int pressChunkX, pressChunkZ;
 
     private EditBox nameField;
+
+    // permissions tab (operators only): a scrolling list of admin territories on the left, the selected
+    // territory's switches and members on the right. Both panes are drawn by hand and clipped to their
+    // pane, so a server with two hundred territories or a long member list can never spill out of the panel.
+    private static final int ROW_H = 14;
+    private int permListX, permListY, permListW, permListH, permDetX, permDetW;
+    private int permListScroll, permDetScroll;
+    private String selectedZone = "";
+    private EditBox memberField;
+    /** Row hitboxes rebuilt every frame, so a click always tests exactly what the player can see. */
+    private final List<Hit> permHits = new ArrayList<>();
+
+    /** One clickable region in a scrolling pane: {@code kind} says what a click on it does. */
+    private record Hit(int x0, int y0, int x1, int y1, int kind, String arg, int index) {}
+
+    private static final int HIT_ZONE = 0;      // select a territory
+    private static final int HIT_PERM = 1;      // flip one permission switch
+    private static final int HIT_MEMBER = 2;    // remove a trusted player
 
     // faction tab
     private static final String[] REL_STATUS = {"FRIENDLY", "NEUTRAL", "HOSTILE"};
@@ -150,6 +185,9 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     private boolean faction() { return claimType == T_FACTION; }
     private boolean admin() { return claimType == T_ADMIN; }
+    private boolean child() { return claimType == T_CHILD; }
+    /** Admin-side modes share the "no cap, no contiguity" rules and the staged colour. */
+    private boolean adminSide() { return admin() || child(); }
 
     // ---- server data ----------------------------------------------------------------------------
 
@@ -158,12 +196,22 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         if (tab == TAB_MAP && nameField != null) {
             if (claimType == T_PERSONAL) lastTypedName = nameField.getValue();
             else if (claimType == T_ADMIN) lastTypedAdminName = nameField.getValue();
+            else if (claimType == T_CHILD) lastTypedChildName = nameField.getValue();
         }
         this.data = msg;
-        // if admin type is selected but the player lost eligibility, fall back
-        if (admin() && !msg.canAdminClaim()) claimType = T_PERSONAL;
+        // if a type is selected the player is no longer eligible for, fall back to something they can use
+        if (adminSide() && !msg.canAdminClaim()) claimType = firstAllowedType(msg);
+        if (claimType == T_PERSONAL && !msg.canPersonalClaim()) claimType = firstAllowedType(msg);
+        if (tab == TAB_PERMS && !msg.canAdminClaim()) tab = TAB_MAP;
+        if (selectedZone.isEmpty() && !msg.adminZones().isEmpty()) selectedZone = msg.adminZones().get(0).name();
         recomputeSets();
         relayout();
+    }
+
+    /** The first claim type this player is actually allowed to use, so the GUI never sits on a dead mode. */
+    private int firstAllowedType(TerritoryDataS2C msg) {
+        if (msg.canPersonalClaim()) return T_PERSONAL;
+        return T_FACTION;
     }
 
     private void recomputeSets() {
@@ -171,6 +219,11 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         forbidden.clear();
         clusters.clear();
         if (data == null) return;
+        if (child()) {
+            recomputeChildSets();
+            computeClusters();
+            return;
+        }
         int mineKind = admin() ? EasyFactionsBridge.KIND_ADMIN
                 : (faction() ? EasyFactionsBridge.KIND_MINE_FACTION : EasyFactionsBridge.KIND_MINE_CORE);
         for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
@@ -181,6 +234,65 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         stagedAdd.removeIf(k -> mineSet.contains(k) || forbidden.contains(k));
         stagedRemove.removeIf(k -> !mineSet.contains(k));
         computeClusters();
+    }
+
+    /**
+     * Child mode: what counts as "mine" is the plot currently being named, and everything that is not free
+     * ground inside its parent is off limits.
+     *
+     * A plot lives inside exactly one parent. The parent is the one this plot already occupies, or — for a
+     * plot being drawn for the first time — the one under the chunk painted first. Every chunk of any other
+     * territory is forbidden, which is what makes "a child can only be inside its parent" something the
+     * player can see rather than an error message after the fact.
+     */
+    private void recomputeChildSets() {
+        String plot = currentChildName();
+        String parent = childParentLabel(plot);
+
+        for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
+            long key = ChunkPos.asLong(e.x(), e.z());
+            String childName = label(e.childIdx());
+            if (!plot.isEmpty() && childName.equals(plot)) {
+                mineSet.add(key);
+                continue;
+            }
+            boolean freeGroundInParent = e.kind() == EasyFactionsBridge.KIND_ADMIN
+                    && childName.isEmpty()
+                    && (parent.isEmpty() || label(e.ownerIdx()).equals(parent));
+            if (!freeGroundInParent) forbidden.add(key);
+        }
+        // chunks with no claim at all are not in the list, and painting one is meaningless in child mode
+        stagedAdd.removeIf(k -> mineSet.contains(k) || forbidden.contains(k) || !claimed(k));
+        stagedRemove.removeIf(k -> !mineSet.contains(k));
+    }
+
+    private boolean claimed(long key) {
+        for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
+            if (ChunkPos.asLong(e.x(), e.z()) == key) return true;
+        }
+        return false;
+    }
+
+    private String label(int idx) {
+        return idx >= 0 && idx < data.owners().size() ? data.owners().get(idx) : "";
+    }
+
+    private String currentChildName() {
+        if (nameField != null && child()) return nameField.getValue().strip();
+        return lastTypedChildName != null ? lastTypedChildName.strip() : "";
+    }
+
+    /** The parent territory a plot belongs to: where it already sits, else where its first staged chunk is. */
+    private String childParentLabel(String plot) {
+        for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
+            if (!plot.isEmpty() && label(e.childIdx()).equals(plot)) return label(e.ownerIdx());
+        }
+        for (long staged : stagedAdd) {
+            for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
+                if (ChunkPos.asLong(e.x(), e.z()) == staged) return label(e.ownerIdx());
+            }
+        }
+        return "";
     }
 
     private void computeClusters() {
@@ -223,13 +335,44 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
                 .bounds(x + 6, y + 28, 74, 16).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.territory.tab.faction"), b -> selectTab(TAB_FACTION))
                 .bounds(x + 84, y + 28, 74, 16).build());
+        // the permissions tab exists only for operators, and only once there is something to administer
+        if (data != null && data.canAdminClaim()) {
+            addRenderableWidget(Button.builder(Component.translatable("gui.territory.tab.perms"), b -> selectTab(TAB_PERMS))
+                    .bounds(x + 162, y + 28, 74, 16).build());
+        }
         if (tab == TAB_MAP) buildMapWidgets(x, y);
+        else if (tab == TAB_PERMS) buildPermWidgets(x, y);
         else buildFactionWidgets(x, y);
+    }
+
+    /**
+     * The permissions page: a fixed two-pane frame with everything that can grow put inside a scrolling
+     * pane. Only the "add a player" row is a real widget, and it sits in a reserved slot at the bottom of
+     * the details pane where it cannot be scrolled away from or overlapped.
+     */
+    private void buildPermWidgets(int x, int y) {
+        permListX = x + 8;
+        permListY = y + 50;
+        permListW = 132;
+        permListH = imageHeight - 58;
+        permDetX = permListX + permListW + 8;
+        permDetW = imageWidth - (permDetX - x) - 8;
+
+        int fieldY = y + imageHeight - 24;
+        memberField = new EditBox(font, permDetX, fieldY, permDetW - 56, 16,
+                Component.translatable("gui.territory.perm.member_hint"));
+        memberField.setMaxLength(16);
+        memberField.setHint(Component.translatable("gui.territory.perm.member_hint"));
+        addRenderableWidget(memberField);
+        addRenderableWidget(Button.builder(Component.translatable("gui.territory.perm.add"),
+                        b -> sendMember(memberField.getValue(), true))
+                .bounds(permDetX + permDetW - 52, fieldY, 52, 16).build());
     }
 
     private void buildMapWidgets(int x, int y) {
         int cx = x + ctrlXoff, cy = y + mapYoff;
-        String typeKey = admin() ? "gui.territory.type.admin"
+        String typeKey = child() ? "gui.territory.type.child"
+                : admin() ? "gui.territory.type.admin"
                 : (faction() ? "gui.territory.type.faction" : "gui.territory.type.personal");
         addRenderableWidget(Button.builder(
                         Component.translatable("gui.territory.type", Component.translatable(typeKey)), b -> cycleType())
@@ -244,6 +387,14 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             // named BEFORE painting: whatever is in this box labels the chunks committed with it
             nameField.setValue(lastTypedAdminName != null ? lastTypedAdminName : "");
             nameField.setEditable(true);
+        } else if (child()) {
+            // the plot's name. Typing an existing plot's name edits that plot instead of starting a new one.
+            nameField.setValue(lastTypedChildName != null ? lastTypedChildName : "");
+            nameField.setEditable(true);
+            nameField.setResponder(v -> {
+                lastTypedChildName = v;
+                recomputeSets();
+            });
         } else {
             nameField.setValue(lastTypedName != null ? lastTypedName : (data != null ? data.personalName() : ""));
             nameField.setEditable(true);
@@ -262,17 +413,26 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private void selectTab(int which) {
         this.tab = which;
         pendingLeave = pendingDisband = false;
+        permListScroll = permDetScroll = 0;
         relayout();
         if (which == TAB_FACTION) PacketDistributor.sendToServer(new FactionInfoRequestC2S(menu.pos));
-        else requestData();
+        else requestData();   // the permissions tab reads the same payload as the map
     }
 
-    /** Cycle Personal -> Faction -> (Admin if eligible) -> Personal. */
+    /**
+     * Cycle Personal -> Faction -> (Admin, Plot if operator) -> Personal.
+     *
+     * Personal is dropped from the cycle for a faction LEADER: his personal claims became the faction's when
+     * he founded it, so offering him a mode that always refuses would just be a button that does nothing.
+     */
     private void cycleType() {
         List<Integer> types = new ArrayList<>();
-        types.add(T_PERSONAL);
+        if (data == null || data.canPersonalClaim()) types.add(T_PERSONAL);
         types.add(T_FACTION);
-        if (data != null && data.canAdminClaim()) types.add(T_ADMIN);
+        if (data != null && data.canAdminClaim()) {
+            types.add(T_ADMIN);
+            types.add(T_CHILD);
+        }
         int idx = types.indexOf(claimType);
         claimType = types.get((idx + 1) % types.size());
         stagedAdd.clear();
@@ -349,11 +509,33 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
+        if (tab == TAB_PERMS && button == 0 && data != null) {
+            // hit-test the rows drawn this frame, so a click can only ever land on something visible
+            for (Hit hit : permHits) {
+                if (mx < hit.x0() || mx >= hit.x1() || my < hit.y0() || my >= hit.y1()) continue;
+                switch (hit.kind()) {
+                    case HIT_ZONE -> {
+                        selectedZone = hit.arg();
+                        permDetScroll = 0;
+                    }
+                    case HIT_PERM -> {
+                        TerritoryDataS2C.AdminZone zone = zoneByName(hit.arg());
+                        if (zone != null) {
+                            sendPerm(hit.arg(), hit.index(),
+                                    !AdminPerm.values()[hit.index()].allowedIn(zone.perms()));
+                        }
+                    }
+                    case HIT_MEMBER -> sendMember(hit.arg(), false);
+                    default -> { }
+                }
+                return true;
+            }
+        }
         if (tab == TAB_MAP && button == 0) {
             if (data != null) {
                 int sw = swatchHit(mx, my);
                 if (sw >= 0) {
-                    if (admin()) {
+                    if (adminSide()) {
                         // staged, not sent: it applies to the chunks this admin commits next, so two admin
                         // regions can differ. Recolouring live would repaint every admin claim on the server.
                         adminColor = PRESET_COLORS[sw];
@@ -455,7 +637,26 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             changeZoom(sy > 0 ? -1 : 1);
             return true;
         }
+        if (tab == TAB_PERMS && sy != 0) {
+            int step = (int) (-sy * ROW_H);
+            if (mx >= permListX - 2 && mx < permListX + permListW + 2) {
+                permListScroll = Math.max(0, permListScroll + step);
+                return true;
+            }
+            if (mx >= permDetX - 2 && mx < permDetX + permDetW + 2) {
+                permDetScroll = Math.max(0, permDetScroll + step);
+                return true;
+            }
+        }
         return super.mouseScrolled(mx, my, sx, sy);
+    }
+
+    private TerritoryDataS2C.AdminZone zoneByName(String name) {
+        if (data == null) return null;
+        for (TerritoryDataS2C.AdminZone z : data.adminZones()) {
+            if (z.name().equals(name)) return z;
+        }
+        return null;
     }
 
     private boolean isSelected(long key) {
@@ -493,7 +694,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     }
 
     private boolean tryStageAdd(int cx, int cz, boolean announce) {
-        if (!admin()) {
+        if (!adminSide()) {
             if (!selectionEmpty() && !touchesSelected(cx, cz)) {
                 if (announce) messageActionBar("gui.territory.must_connect");
                 return false;
@@ -525,11 +726,11 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         if (data == null) return;
         List<Long> add = new ArrayList<>(stagedAdd);
         List<Long> remove = new ArrayList<>(stagedRemove);
-        // personal claims carry the player's territory name; admin claims carry this region's name
+        // personal claims carry the player's territory name; admin claims and plots carry their own
         String name = (nameField == null || claimType == T_FACTION) ? "" : nameField.getValue();
         boolean nameChanged = claimType == T_PERSONAL && nameField != null && !name.equals(data.personalName());
         if (add.isEmpty() && remove.isEmpty() && !nameChanged) return;
-        int color = admin() ? adminColor : -1;
+        int color = adminSide() ? adminColor : -1;
         PacketDistributor.sendToServer(new TerritoryCommitC2S(claimType, add, remove, name, color,
                 (int) Math.floor(viewCenterX), (int) Math.floor(viewCenterZ), bufRadius));
     }
@@ -604,9 +805,186 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         if (tab == TAB_MAP) {
             renderMapPage(g);
             renderBrush(g, mouseX, mouseY);
+        } else if (tab == TAB_PERMS) {
+            renderPermsPage(g, mouseX, mouseY);
         } else {
             renderFactionPage(g);
         }
+    }
+
+    // ---- permissions page -------------------------------------------------------------------------
+
+    /**
+     * Two panes: the admin territories on the left, the selected one's switches and trusted players on the
+     * right. Everything that can grow lives inside a scissored, scrolling pane with a scrollbar, so a
+     * hundred plots or a long member list scroll rather than run off the panel.
+     */
+    private void renderPermsPage(GuiGraphics g, int mouseX, int mouseY) {
+        permHits.clear();
+        if (data == null) return;
+
+        List<TerritoryDataS2C.AdminZone> zones = data.adminZones();
+        if (zones.isEmpty()) {
+            g.drawString(font, Component.translatable("gui.territory.perm.none"),
+                    permListX, permListY + 4, TEXT_DIM, false);
+            return;
+        }
+        if (zones.stream().noneMatch(z -> z.name().equals(selectedZone))) selectedZone = zones.get(0).name();
+
+        g.drawString(font, Component.translatable("gui.territory.perm.territories"),
+                permListX, permListY - 11, TEXT_DIM, false);
+        renderZoneList(g, zones);
+        renderZoneDetail(g, zones);
+    }
+
+    private void renderZoneList(GuiGraphics g, List<TerritoryDataS2C.AdminZone> zones) {
+        int contentH = zones.size() * ROW_H;
+        permListScroll = clampScroll(permListScroll, contentH, permListH);
+
+        g.fill(permListX - 2, permListY - 2, permListX + permListW + 2, permListY + permListH + 2, 0x50000000);
+        g.renderOutline(permListX - 2, permListY - 2, permListW + 4, permListH + 4, OUTLINE_DARK);
+
+        g.enableScissor(permListX, permListY, permListX + permListW, permListY + permListH);
+        int y = permListY - permListScroll;
+        for (TerritoryDataS2C.AdminZone z : zones) {
+            if (y + ROW_H >= permListY && y <= permListY + permListH) {
+                boolean selected = z.name().equals(selectedZone);
+                if (selected) g.fill(permListX, y, permListX + permListW, y + ROW_H - 1, 0x556A4A1C);
+                int indent = z.parent().isEmpty() ? 0 : 8;
+                g.fill(permListX + indent + 1, y + 3, permListX + indent + 6, y + ROW_H - 4,
+                        0xFF000000 | z.color());
+                String text = trim(z.name().isEmpty() ? I18nAdmin() : z.name(), permListW - indent - 34);
+                g.drawString(font, text, permListX + indent + 10, y + 3, selected ? TITLE_GOLD : 0xFFDDDDDD, false);
+                g.drawString(font, String.valueOf(z.chunks()), permListX + permListW - 20, y + 3, TEXT_DIM, false);
+                permHits.add(new Hit(permListX, y, permListX + permListW, y + ROW_H, HIT_ZONE, z.name(), 0));
+            }
+            y += ROW_H;
+        }
+        g.disableScissor();
+        drawScrollbar(g, permListX + permListW - 2, permListY, permListH, contentH, permListScroll);
+    }
+
+    private void renderZoneDetail(GuiGraphics g, List<TerritoryDataS2C.AdminZone> zones) {
+        TerritoryDataS2C.AdminZone zone = null;
+        for (TerritoryDataS2C.AdminZone z : zones) {
+            if (z.name().equals(selectedZone)) zone = z;
+        }
+        if (zone == null) return;
+
+        // fixed header: never scrolls, so you always know which territory you are editing
+        String header = zone.name().isEmpty() ? I18nAdmin() : zone.name();
+        g.drawString(font, Component.literal(header).withStyle(net.minecraft.ChatFormatting.BOLD),
+                permDetX, permListY - 11, TITLE_GOLD, false);
+        if (!zone.parent().isEmpty()) {
+            int w = font.width(header) + 6;
+            g.drawString(font, Component.translatable("gui.territory.perm.child_of", zone.parent()),
+                    permDetX + w, permListY - 11, TEXT_DIM, false);
+        }
+
+        // the scrolling body stops short of the "add player" row reserved at the bottom of the panel
+        int bodyH = permListH - 22;
+        int bodyBottom = permListY + bodyH;
+        int contentH = permContentHeight(zone);
+        permDetScroll = clampScroll(permDetScroll, contentH, bodyH);
+
+        g.fill(permDetX - 2, permListY - 2, permDetX + permDetW + 2, bodyBottom + 2, 0x50000000);
+        g.renderOutline(permDetX - 2, permListY - 2, permDetW + 4, bodyH + 4, OUTLINE_DARK);
+        g.enableScissor(permDetX, permListY, permDetX + permDetW, bodyBottom);
+
+        int y = permListY - permDetScroll;
+        g.drawString(font, Component.translatable(zone.custom()
+                ? "gui.territory.perm.custom" : "gui.territory.perm.inherited"), permDetX + 2, y + 2, TEXT_DIM, false);
+        y += ROW_H + 2;
+
+        AdminPerm[] perms = AdminPerm.values();
+        for (int i = 0; i < perms.length; i++) {
+            if (y + ROW_H >= permListY && y <= bodyBottom) {
+                boolean on = perms[i].allowedIn(zone.perms());
+                g.drawString(font, Component.translatable(perms[i].langKey()), permDetX + 4, y + 3, 0xFFDDDDDD, false);
+                drawToggle(g, permDetX + permDetW - 40, y + 1, on);
+                permHits.add(new Hit(permDetX, y, permDetX + permDetW, y + ROW_H, HIT_PERM, zone.name(), i));
+            }
+            y += ROW_H;
+        }
+
+        y += 4;
+        if (y + ROW_H >= permListY && y <= bodyBottom) {
+            g.drawString(font, Component.translatable("gui.territory.perm.members", zone.members().size()),
+                    permDetX + 2, y + 3, TEXT_DIM, false);
+        }
+        y += ROW_H;
+        for (String member : zone.members()) {
+            if (y + ROW_H >= permListY && y <= bodyBottom) {
+                g.drawString(font, trim(member, permDetW - 40), permDetX + 8, y + 3, 0xFFDDDDDD, false);
+                g.drawString(font, Component.translatable("gui.territory.perm.remove"),
+                        permDetX + permDetW - 30, y + 3, 0xFFCC6666, false);
+                permHits.add(new Hit(permDetX + permDetW - 34, y, permDetX + permDetW, y + ROW_H,
+                        HIT_MEMBER, member, 0));
+            }
+            y += ROW_H;
+        }
+        if (zone.members().isEmpty() && y - ROW_H + ROW_H >= permListY) {
+            g.drawString(font, Component.translatable("gui.territory.perm.no_members"),
+                    permDetX + 8, y - ROW_H + 3, TEXT_DIM, false);
+        }
+
+        g.disableScissor();
+        drawScrollbar(g, permDetX + permDetW - 2, permListY, bodyH, contentH, permDetScroll);
+    }
+
+    private int permContentHeight(TerritoryDataS2C.AdminZone zone) {
+        int rows = 1 + AdminPerm.values().length + 1 + Math.max(1, zone.members().size());
+        return rows * ROW_H + 8;
+    }
+
+    private void drawToggle(GuiGraphics g, int x, int y, boolean on) {
+        int w = 34, h = ROW_H - 3;
+        g.fill(x, y, x + w, y + h, on ? 0xFF2E6B2E : 0xFF5A2626);
+        g.renderOutline(x, y, w, h, on ? 0xFF6ED06E : 0xFFD06E6E);
+        Component label = Component.translatable(on ? "gui.territory.on" : "gui.territory.off");
+        g.drawCenteredString(font, label, x + w / 2, y + 2, on ? 0xFFCFF0CF : 0xFFF0CFCF);
+    }
+
+    private void drawScrollbar(GuiGraphics g, int x, int y, int viewH, int contentH, int scroll) {
+        if (contentH <= viewH) return;
+        int barH = Math.max(12, viewH * viewH / contentH);
+        int maxScroll = contentH - viewH;
+        int barY = y + (int) ((viewH - barH) * (scroll / (float) maxScroll));
+        g.fill(x, y, x + 2, y + viewH, 0x40FFFFFF);
+        g.fill(x, barY, x + 2, barY + barH, 0xFF8A6A3C);
+    }
+
+    private static int clampScroll(int scroll, int contentH, int viewH) {
+        return Math.max(0, Math.min(scroll, Math.max(0, contentH - viewH)));
+    }
+
+    private String trim(String text, int maxWidth) {
+        if (font.width(text) <= maxWidth) return text;
+        // truncate in place rather than letting a long name run under the count or off the pane
+        StringBuilder b = new StringBuilder();
+        for (char c : text.toCharArray()) {
+            if (font.width(b.toString() + c + "...") > maxWidth) break;
+            b.append(c);
+        }
+        return b + "...";
+    }
+
+    private String I18nAdmin() {
+        return Component.translatable("gui.territory.type.admin").getString();
+    }
+
+    private void sendPerm(String territory, int index, boolean allowed) {
+        PacketDistributor.sendToServer(new AdminActionC2S(AdminActionC2S.SET_PERM, territory,
+                Integer.toString(index), allowed,
+                (int) Math.floor(viewCenterX), (int) Math.floor(viewCenterZ), bufRadius));
+    }
+
+    private void sendMember(String name, boolean add) {
+        if (name == null || name.isBlank()) return;
+        PacketDistributor.sendToServer(new AdminActionC2S(
+                add ? AdminActionC2S.ADD_MEMBER : AdminActionC2S.REMOVE_MEMBER, selectedZone, name.strip(), add,
+                (int) Math.floor(viewCenterX), (int) Math.floor(viewCenterZ), bufRadius));
+        if (add && memberField != null) memberField.setValue("");
     }
 
     /** Hold-to-arm brush: counts down on the cursor, then a drag paints claims / relinquishes. */
@@ -662,9 +1040,19 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
         g.enableScissor(mx0, my0, mx0 + mapPx, my0 + mapPx);
         if (data != null) {
+            boolean showPlots = data.canAdminClaim();
             for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
-                drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, A_FILL | (e.color() & 0xFFFFFF), false);
                 long key = ChunkPos.asLong(e.x(), e.z());
+                // in plot mode the parent territory recedes into the background so the plot being drawn
+                // inside it is the thing you can actually read
+                int fill = child() && !mineSet.contains(key)
+                        ? A_GREYED | dim(e.color()) : A_FILL | (e.color() & 0xFFFFFF);
+                drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, fill, false);
+                // plots are drawn for operators only, and only here: they exist in no other map on the server
+                if (showPlots && e.childIdx() >= 0 && !mineSet.contains(key)) {
+                    drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0,
+                            A_CHILD | (e.childColor() & 0xFFFFFF), true);
+                }
                 if (mineSet.contains(key)) {
                     if (stagedRemove.contains(key)) drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, A_REMOVE, true);
                     else outlineCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, TITLE_GOLD);
@@ -695,6 +1083,12 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         int cx = leftPos + ctrlXoff, y = topPos + mapYoff;
         if (data != null && !data.efLoaded()) {
             g.drawString(font, Component.translatable("gui.territory.no_ef"), cx, y + 22, 0xFFCC6666, false);
+        } else if (child()) {
+            String parent = data == null ? "" : childParentLabel(currentChildName());
+            Component line = parent.isEmpty()
+                    ? Component.translatable("gui.territory.child_pick_parent")
+                    : Component.translatable("gui.territory.child_in", selectionCount(), parent);
+            g.drawString(font, line, cx, y + 22, 0xFFC056C0, false);
         } else if (admin()) {
             g.drawString(font, Component.translatable("gui.territory.claims_admin", selectionCount()), cx, y + 22, 0xFFC056C0, false);
         } else if (data != null) {
@@ -705,12 +1099,13 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             g.drawString(font, Component.translatable("gui.territory.claims", projected, cap), cx, y + 22, color, false);
         }
 
-        String nameKey = admin() ? "gui.territory.name.admin"
+        String nameKey = child() ? "gui.territory.name.child"
+                : admin() ? "gui.territory.name.admin"
                 : (faction() ? "gui.territory.name.faction" : "gui.territory.name.personal");
         g.drawString(font, Component.translatable(nameKey), cx, y + 36, TEXT_DIM, false);
         g.drawString(font, Component.translatable("gui.territory.border_color"), cx, y + 70, TEXT_DIM, false);
         int sy = y + 82, sw = 18, gap = 4;
-        int current = data == null ? -1 : (admin() ? (adminColor & 0xFFFFFF)
+        int current = data == null ? -1 : (adminSide() ? (adminColor & 0xFFFFFF)
                 : ((faction() ? data.factionColor() : data.personalColor()) & 0xFFFFFF));
         for (int i = 0; i < PRESET_COLORS.length; i++) {
             int col = i % 4, row = i / 4;

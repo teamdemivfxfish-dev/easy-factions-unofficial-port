@@ -10,7 +10,9 @@ import net.neoforged.bus.api.IEventBus;
 import net.neoforged.fml.ModContainer;
 import net.neoforged.fml.common.Mod;
 import net.neoforged.fml.config.ModConfig;
+import net.neoforged.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.neoforged.neoforge.common.extensions.IMenuTypeExtension;
+import top.leonx.territory.integration.FactionLifecycle;
 import net.neoforged.neoforge.registries.DeferredBlock;
 import net.neoforged.neoforge.registries.DeferredHolder;
 import net.neoforged.neoforge.registries.DeferredItem;
@@ -71,5 +73,6 @@ public final class TerritoryMod {
         BLOCK_ENTITIES.register(modBus);
         // Buy Claims button config (territory-server.toml). Values are only ever read at use-time.
         container.registerConfig(ModConfig.Type.SERVER, TerritoryConfig.SPEC);
+        modBus.addListener(FMLCommonSetupEvent.class, event -> FactionLifecycle.register());
     }
 }

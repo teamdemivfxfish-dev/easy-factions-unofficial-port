@@ -40,6 +40,7 @@ public final class TerritoryNet {
         registrar.playToServer(FactionActionC2S.TYPE, FactionActionC2S.CODEC, TerritoryNet::onFactionAction);
         registrar.playToClient(FactionInfoS2C.TYPE, FactionInfoS2C.CODEC, TerritoryNet::onFactionInfo);
         registrar.playToServer(TerritoryColorC2S.TYPE, TerritoryColorC2S.CODEC, TerritoryNet::onColor);
+        registrar.playToServer(AdminActionC2S.TYPE, AdminActionC2S.CODEC, TerritoryNet::onAdminAction);
     }
 
     private static int clampRadius(int r) {
@@ -66,14 +67,21 @@ public final class TerritoryNet {
 
             boolean personal = msg.claimType() == EasyFactionsBridge.TYPE_PERSONAL;
             boolean adminClaim = msg.claimType() == EasyFactionsBridge.TYPE_ADMIN;
+            boolean childPlot = msg.claimType() == EasyFactionsBridge.TYPE_CHILD;
 
-            int coreColor = personal ? TerritoryNames.get(server).getColor(sp.getUUID()) : -1;
-            // name/colour only mean anything for the claim type they belong to; commit() ignores the rest
-            String adminName = adminClaim ? msg.name() : "";
-            int adminColor = adminClaim ? msg.color() : -1;
-
-            String status = EasyFactionsBridge.commit(sp, msg.claimType(), add, remove, coreColor,
-                    adminName, adminColor);
+            String status;
+            if (childPlot) {
+                // a child plot moves no Easy Factions claim: it only records which of the parent's chunks
+                // belong to the plot, so it takes a different path from the three real claim types
+                status = EasyFactionsBridge.commitChild(sp, msg.name(), add, remove, msg.color());
+            } else {
+                int coreColor = personal ? TerritoryNames.get(server).getColor(sp.getUUID()) : -1;
+                // name/colour only mean anything for the claim type they belong to; commit() ignores the rest
+                String adminName = adminClaim ? msg.name() : "";
+                int adminColor = adminClaim ? msg.color() : -1;
+                status = EasyFactionsBridge.commit(sp, msg.claimType(), add, remove, coreColor,
+                        adminName, adminColor);
+            }
             if (personal) {
                 TerritoryNames.get(server).setName(sp.getUUID(), msg.name());
             }
@@ -99,6 +107,31 @@ public final class TerritoryNet {
             }
             sendData(sp, new ChunkPos(msg.centerX(), msg.centerZ()), clampRadius(msg.radius()));
         });
+    }
+
+    private static void onAdminAction(AdminActionC2S msg, IPayloadContext ctx) {
+        ctx.enqueueWork(() -> {
+            if (!(ctx.player() instanceof ServerPlayer sp)) return;
+            String status = switch (msg.action()) {
+                case AdminActionC2S.SET_PERM -> EasyFactionsBridge.setAdminPerm(sp, msg.territory(),
+                        parseOrdinal(msg.arg()), msg.flag());
+                case AdminActionC2S.ADD_MEMBER -> EasyFactionsBridge.setAdminMember(sp, msg.territory(), msg.arg(), true);
+                case AdminActionC2S.REMOVE_MEMBER -> EasyFactionsBridge.setAdminMember(sp, msg.territory(), msg.arg(), false);
+                default -> "";
+            };
+            if (status != null && !status.isEmpty()) {
+                sp.displayClientMessage(Component.literal(status), true);
+            }
+            sendData(sp, new ChunkPos(msg.centerX(), msg.centerZ()), clampRadius(msg.radius()));
+        });
+    }
+
+    private static int parseOrdinal(String s) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            return -1;      // rejected by the bridge as an unknown permission
+        }
     }
 
     private static void onData(TerritoryDataS2C msg, IPayloadContext ctx) {
@@ -205,7 +238,23 @@ public final class TerritoryNet {
                 owners.add(k);
                 return owners.size() - 1;
             });
-            entries.add(new TerritoryDataS2C.ClaimEntry(cell.x(), cell.z(), cell.kind(), cell.color(), idx));
+            int childIdx = -1;
+            if (!cell.childName().isEmpty()) {
+                childIdx = ownerIndex.computeIfAbsent(cell.childName(), k -> {
+                    owners.add(k);
+                    return owners.size() - 1;
+                });
+            }
+            entries.add(new TerritoryDataS2C.ClaimEntry(cell.x(), cell.z(), cell.kind(), cell.color(), idx,
+                    childIdx, cell.childColor()));
+        }
+
+        // operators only: everything the Permissions tab needs. Everyone else gets an empty list, so a
+        // normal player's client is never even told which admin territories exist.
+        List<TerritoryDataS2C.AdminZone> zones = new ArrayList<>();
+        for (EasyFactionsBridge.AdminZoneInfo z : EasyFactionsBridge.adminZones(sp)) {
+            zones.add(new TerritoryDataS2C.AdminZone(z.name(), z.parent(), z.color(), z.perms(), z.custom(),
+                    z.chunks(), z.members()));
         }
 
         TerritoryNames names = TerritoryNames.get(server);
@@ -214,10 +263,10 @@ public final class TerritoryNet {
         if (personalColor == TerritoryNames.NO_COLOR) personalColor = EasyFactionsBridge.defaultCoreColor();
 
         TerritoryDataS2C data = new TerritoryDataS2C(
-                c.efLoaded(), c.inFaction(), c.canFactionClaim(), c.canAdminClaim(),
+                c.efLoaded(), c.inFaction(), c.canFactionClaim(), c.canAdminClaim(), c.canPersonalClaim(),
                 c.factionName(), c.factionColor(),
                 c.coreCap(), c.coreUsed(), c.factionCap(), c.factionUsed(),
-                personalName, personalColor, owners, entries);
+                personalName, personalColor, owners, entries, zones);
         PacketDistributor.sendToPlayer(sp, data);
     }
 }
