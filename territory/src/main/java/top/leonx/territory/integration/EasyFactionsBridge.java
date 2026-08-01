@@ -836,6 +836,13 @@ public final class EasyFactionsBridge {
      * against the player instead. Operators still pass, and which interactions are protected at all is still
      * Easy Factions' {@code coreClaimRestrictions} config, so servers keep the settings they already tuned.
      *
+     * <h2>Faction claims — correct in Easy Factions, and enforced again here anyway</h2>
+     * Easy Factions' faction branch is sound: it compares the acting player's faction name against the claim
+     * owner. It is re-checked here regardless, because being logically correct is not the same as running.
+     * Three things switch it off in the field with nothing in the log to show for it: EF's restriction list
+     * being empty in the save's own copy of the config, every player sitting at permission level 2, and any
+     * other mod un-cancelling the event after EF cancelled it. Ruling here, last, survives all three.
+     *
      * <h2>Admin claims</h2>
      * Easy Factions has one global restriction list for every admin claim on the server. A territory with
      * per-territory switches ({@link AdminPerm}) answers for itself instead, a child plot answers before its
@@ -844,6 +851,7 @@ public final class EasyFactionsBridge {
      */
     public static Decision decide(Player player, ResourceKey<Level> dim, ChunkPos pos, Interaction interaction) {
         if (!loaded() || player == null || dim == null || pos == null || interaction == null) return Decision.DEFER;
+        if (!TerritoryConfig.protectionEnabled()) return Decision.DEFER;
         MinecraftServer server = player.getServer();
         if (server == null) return Decision.DEFER;
 
@@ -851,19 +859,72 @@ public final class EasyFactionsBridge {
         if (!cm.isClaimed(dim, pos)) return Decision.DEFER;
         ClaimData claim = cm.getClaim(dim, pos);
         if (claim == null) return Decision.DEFER;
-        if (player.hasPermissions(2)) return Decision.DEFER;             // operators bypass, as in EF
+        // Operators bypass, as in EF — but at a level the server picks. EF hardcodes 2, which is worth nothing
+        // on a server that grants level 2 to a rank, and that alone reads as "claims stopped working".
+        if (player.hasPermissions(TerritoryConfig.bypassPermissionLevel())) return Decision.DEFER;
 
         if (claim.type == ClaimType.CORE) {
-            if (!efRestricts(ServerConfig.coreClaimRestrictions, interaction)) return Decision.DEFER;
-            // DEFER, not ALLOW, for the owner: this fix exists to add a restriction Easy Factions is missing,
-            // never to hand out permission. Returning ALLOW here would un-cancel any OTHER protection mod
-            // that had already refused the same interaction.
+            if (!TerritoryConfig.enforcePersonalClaims()) return Decision.DEFER;
+            if (!restricts(ClaimType.CORE, interaction)) return relax(ClaimType.CORE, interaction);
+            // DEFER, not ALLOW, for the owner: where a claim DOES protect something, this exists to add a
+            // restriction Easy Factions is missing, never to hand out permission. Returning ALLOW here would
+            // un-cancel any OTHER protection mod that had already refused the same interaction.
             return player.getUUID().toString().equals(claim.owner) ? Decision.DEFER : Decision.DENY;
+        }
+        if (claim.type == ClaimType.FACTION) {
+            if (!TerritoryConfig.enforceFactionClaims()) return Decision.DEFER;
+            if (!restricts(ClaimType.FACTION, interaction)) return relax(ClaimType.FACTION, interaction);
+            Faction f = FactionStateManager.get(server).getFactionByPlayer(player.getUUID());
+            // no faction at all is the common case for a raider, and EF denies it too
+            return f != null && f.getName().equals(claim.owner) ? Decision.DEFER : Decision.DENY;
         }
         if (claim.type == ClaimType.ADMIN) {
             return adminDecision(server, player.getUUID(), dim, pos.toLong(), interaction);
         }
-        return Decision.DEFER;                                            // faction claims: EF is correct
+        return Decision.DEFER;
+    }
+
+    /**
+     * Whether a claim of {@code type} protects against {@code interaction}.
+     *
+     * Reads our own list by default rather than Easy Factions'. EF's lists come from a NeoForge SERVER config,
+     * which lives in {@code <world>/serverconfig/} and not in {@code config/}, so the file an admin actually
+     * edited is frequently not the file being read. An empty list there disables protection outright and logs
+     * nothing, which is indistinguishable from the mod being broken.
+     */
+    private static boolean restricts(ClaimType type, Interaction interaction) {
+        if (TerritoryConfig.useOwnRestrictions()) {
+            // containers answer to their own switch, since Easy Factions cannot tell a chest from a door
+            if (interaction == Interaction.CONTAINER) return TerritoryConfig.protectContainers();
+            return TerritoryConfig.restrictedInteractions().contains(interaction);
+        }
+        return efRestricts(efListFor(type), interaction);
+    }
+
+    /**
+     * What to say about an interaction a claim does NOT protect against.
+     *
+     * Easy Factions has already had its say by the time this runs, and its own restriction list is far wider
+     * than the default one here: leave it at DEFER and taking RIGHT_CLICK_BLOCK out of our list changes
+     * nothing whatsoever, because EF cancelled the click before we were asked. So where EF refused something
+     * our list deliberately permits, that refusal is undone.
+     *
+     * Undone NARROWLY, and only ever inside a claimed chunk: the refusal must be one Easy Factions' own
+     * config accounts for. A cancellation coming from anywhere else — a spawn-protection mod, a minigame, a
+     * region plugin — is left exactly where it is, because ALLOW un-cancels for everybody at once and this
+     * mod has no business overruling a decision it did not cause.
+     */
+    private static Decision relax(ClaimType type, Interaction interaction) {
+        if (!TerritoryConfig.overrideEasyFactions() || !TerritoryConfig.useOwnRestrictions()) return Decision.DEFER;
+        return efRestricts(efListFor(type), interaction) ? Decision.ALLOW : Decision.DEFER;
+    }
+
+    private static Set<ChunkInteractionType> efListFor(ClaimType type) {
+        return switch (type) {
+            case FACTION -> ServerConfig.factionClaimRestrictions;
+            case CORE -> ServerConfig.coreClaimRestrictions;
+            case ADMIN -> ServerConfig.adminClaimRestrictions;
+        };
     }
 
     /** The admin-territory ruling for a chunk, with no player-specific check beyond membership. */
@@ -896,14 +957,165 @@ public final class EasyFactionsBridge {
         return adminDecision(server, null, dim, pos.toLong(), interaction);
     }
 
+    /**
+     * Whether EASY FACTIONS' list restricts {@code interaction} — the question of what EF itself did, which
+     * is not the same question as whether the interaction ought to be allowed.
+     *
+     * Asked about the Easy Factions equivalent, because our CONTAINER has no counterpart over there: EF only
+     * ever saw a right click on a block, so that is the entry that decided whether it cancelled.
+     */
     private static boolean efRestricts(Set<ChunkInteractionType> restrictions, Interaction interaction) {
         if (restrictions == null) return false;
         try {
-            return restrictions.contains(ChunkInteractionType.valueOf(interaction.name()));
+            return restrictions.contains(
+                    ChunkInteractionType.valueOf(interaction.easyFactionsEquivalent().name()));
         } catch (IllegalArgumentException e) {
             // our enum has drifted from Easy Factions': treat as unrestricted rather than guess
             return false;
         }
+    }
+
+    // ---- diagnostics -----------------------------------------------------------------------------------
+
+    /**
+     * Everything that decides whether {@code player} may build where they are standing, as display lines.
+     *
+     * This exists because the failure mode being diagnosed is silent on every side: a stale per-save config,
+     * a permission rank nobody remembers granting and a claim in an unexpected dimension all look identical
+     * from in-game, and none of them writes anything to the log. One command that prints the inputs and the
+     * verdict together turns "it doesn't work on our server" into a screenshot that names the cause.
+     */
+    public static List<String> diagnose(ServerPlayer player) {
+        List<String> out = new ArrayList<>();
+        if (!loaded()) {
+            out.add("Easy Factions is NOT loaded. Claims cannot work at all.");
+            return out;
+        }
+        MinecraftServer server = player.getServer();
+        if (server == null) return List.of("No server. Run this in game.");
+
+        ResourceKey<Level> dim = player.level().dimension();
+        ChunkPos pos = player.chunkPosition();
+        ClaimManager cm = ClaimManager.get(server);
+        Faction mine = FactionStateManager.get(server).getFactionByPlayer(player.getUUID());
+
+        out.add("Chunk " + pos.x + ", " + pos.z + " in " + dim.location());
+        out.add("You: perm level " + permissionLevel(player)
+                + ", faction " + (mine == null ? "(none)" : mine.getName()));
+
+        boolean claimed = cm.isClaimed(dim, pos);
+        ClaimData claim = claimed ? cm.getClaim(dim, pos) : null;
+        if (claim == null) {
+            out.add("Claim: UNCLAIMED. Nothing here is protected by anyone.");
+        } else {
+            out.add("Claim: " + claim.type + " owned by " + claim.owner
+                    + " (" + chunkOwnerDisplay(server, dim, pos) + ")");
+            if (claim.type == ClaimType.ADMIN) {
+                AdminTerritories.Territory t = AdminTerritories.get(server).governing(dim, pos.toLong());
+                out.add("  admin territory: " + (t == null ? "(unnamed, EF global rules apply)"
+                        : t.name() + (t.perms() == AdminPerm.NOT_SET ? " (perms not customised)" : " (custom perms)")));
+            }
+        }
+
+        out.add("Config (territory-server.toml [protection]): enabled=" + TerritoryConfig.protectionEnabled()
+                + " faction=" + TerritoryConfig.enforceFactionClaims()
+                + " personal=" + TerritoryConfig.enforcePersonalClaims()
+                + " ownList=" + TerritoryConfig.useOwnRestrictions()
+                + " bypassLevel=" + TerritoryConfig.bypassPermissionLevel());
+        out.add("  our restricted list: " + TerritoryConfig.restrictedInteractions()
+                + " overrideEF=" + TerritoryConfig.overrideEasyFactions()
+                + " containers=" + (TerritoryConfig.protectContainers() ? "protected" : "open to all"));
+        out.add("Easy Factions live config: faction=" + nameSet(ServerConfig.factionClaimRestrictions)
+                + " core=" + nameSet(ServerConfig.coreClaimRestrictions));
+        out.add("  EF claim dimensions: faction=" + ServerConfig.factionClaimDimensions
+                + " core=" + ServerConfig.coreClaimDimensions);
+        List<String> overrides = TerritoryConfig.perWorldConfigOverrides(
+                server.getWorldPath(net.minecraft.world.level.storage.LevelResource.ROOT));
+        if (!overrides.isEmpty()) {
+            out.add("  WARNING: this world overrides " + overrides + " from <world>/serverconfig/."
+                    + " Edits made in config/ are being ignored.");
+        }
+
+        if (player.hasPermissions(TerritoryConfig.bypassPermissionLevel())) {
+            out.add("VERDICT: you BYPASS protection at permission level "
+                    + TerritoryConfig.bypassPermissionLevel() + ". Test as a normal player, or raise"
+                    + " bypassPermissionLevel to 4.");
+        }
+        // ALLOW reads as "Easy Factions refused this and we put it back", which is the whole mechanism behind
+        // a claim that only stops building, so it is worth spelling out rather than printing a bare verdict.
+        for (Interaction i : new Interaction[]{Interaction.BREAK_BLOCK, Interaction.PLACE_BLOCK,
+                Interaction.RIGHT_CLICK_BLOCK, Interaction.CONTAINER, Interaction.INTERACT_ENTITY}) {
+            Decision d = decide(player, dim, pos, i);
+            String note = switch (d) {
+                case DENY -> " (blocked)";
+                case ALLOW -> " (allowed - Easy Factions' refusal is being undone here)";
+                case DEFER -> " (no opinion; Easy Factions' answer stands)";
+            };
+            out.add("VERDICT " + i + ": " + d + note);
+        }
+        return out;
+    }
+
+    /** Whether EF's own restriction lists have loaded and still cover building, for the startup report. */
+    public static List<String> protectionWarnings() {
+        List<String> out = new ArrayList<>();
+        if (!loaded()) return out;
+        if (ServerConfig.factionClaimRestrictions == null || ServerConfig.coreClaimRestrictions == null) {
+            out.add("Easy Factions' restriction lists are null: its server config never loaded for this world.");
+            return out;
+        }
+        if (TerritoryConfig.useOwnRestrictions()) {
+            // The opposite failure to an empty list, and the one the looser default makes likely: our list
+            // permits something, Easy Factions' list still forbids it, and nothing here is allowed to undo
+            // that. Players then report an interaction being blocked that the config plainly permits.
+            if (!TerritoryConfig.overrideEasyFactions()) {
+                List<Interaction> stillBlocked = new ArrayList<>();
+                for (Interaction i : Interaction.values()) {
+                    if (i == Interaction.CONTAINER) continue;                 // covered by RIGHT_CLICK_BLOCK
+                    if (TerritoryConfig.restrictedInteractions().contains(i)) continue;
+                    if (efRestricts(ServerConfig.factionClaimRestrictions, i)
+                            || efRestricts(ServerConfig.coreClaimRestrictions, i)) {
+                        stillBlocked.add(i);
+                    }
+                }
+                if (!stillBlocked.isEmpty()) {
+                    out.add("overrideEasyFactions is off, so Easy Factions still blocks " + stillBlocked
+                            + " inside claims even though restrictedInteractions permits them. Turn it on, or"
+                            + " remove those entries from easy_factions-server.toml as well.");
+                }
+            }
+            return out;                                        // EF's lists are not being consulted otherwise
+        }
+        for (ChunkInteractionType t : new ChunkInteractionType[]{
+                ChunkInteractionType.BREAK_BLOCK, ChunkInteractionType.PLACE_BLOCK}) {
+            if (!ServerConfig.factionClaimRestrictions.contains(t)) {
+                out.add("Easy Factions' factionClaimRestrictions does not contain " + t
+                        + ", so faction claims will NOT stop it.");
+            }
+            if (!ServerConfig.coreClaimRestrictions.contains(t)) {
+                out.add("Easy Factions' coreClaimRestrictions does not contain " + t
+                        + ", so personal claims will NOT stop it.");
+            }
+        }
+        return out;
+    }
+
+    /**
+     * The player's effective permission level, probed rather than read: {@code getPermissionLevel} is
+     * protected, and probing is the more honest answer anyway because {@code hasPermissions} is what every
+     * bypass check actually calls, including any permission mod that overrides it.
+     */
+    private static int permissionLevel(ServerPlayer player) {
+        for (int level = 4; level >= 1; level--) {
+            if (player.hasPermissions(level)) return level;
+        }
+        return 0;
+    }
+
+    private static String nameSet(Set<ChunkInteractionType> set) {
+        if (set == null) return "(not loaded)";
+        if (set.isEmpty()) return "[] EMPTY - protects nothing";
+        return set.toString();
     }
 
     // ---- admin territories: permissions, members, child plots -----------------------------------------

@@ -22,7 +22,7 @@ public enum AdminPerm {
     BREAK(0, "break", Interaction.BREAK_BLOCK),
     PLACE(1, "place", Interaction.PLACE_BLOCK),
     USE(2, "use", Interaction.RIGHT_CLICK_BLOCK, Interaction.LEFT_CLICK_BLOCK,
-            Interaction.RIGHT_CLICK_ITEM, Interaction.USE_BUCKET),
+            Interaction.RIGHT_CLICK_ITEM, Interaction.USE_BUCKET, Interaction.CONTAINER),
     ENTITIES(3, "entities", Interaction.INTERACT_ENTITY),
     ATTACK(4, "attack", Interaction.PLAYER_ATTACK),
     DAMAGE(5, "damage", Interaction.EXPLOSION_DAMAGE, Interaction.MOB_GRIEFING_DAMAGE, Interaction.PISTON_MOVE);

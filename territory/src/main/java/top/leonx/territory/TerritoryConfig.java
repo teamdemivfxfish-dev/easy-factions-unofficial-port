@@ -1,6 +1,11 @@
 package top.leonx.territory;
 
 import net.neoforged.neoforge.common.ModConfigSpec;
+import top.leonx.territory.world.Interaction;
+
+import java.util.EnumSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Server config for the "Buy Claims" button in the Faction tab. Lives in {@code territory-server.toml}.
@@ -51,6 +56,23 @@ public final class TerritoryConfig {
     public static final ModConfigSpec.IntValue ADMIN_DEFAULT_COLOR;
     /** Require creative mode, on top of operator, before admin claiming is offered. */
     public static final ModConfigSpec.BooleanValue ADMIN_REQUIRES_CREATIVE;
+
+    /** Master switch for enforcing claims from this mod at all. */
+    public static final ModConfigSpec.BooleanValue PROTECTION_ENABLED;
+    /** Enforce faction claims here instead of relying on Easy Factions to do it. */
+    public static final ModConfigSpec.BooleanValue ENFORCE_FACTION;
+    /** Enforce personal claims here (Easy Factions cannot: its check ignores the acting player). */
+    public static final ModConfigSpec.BooleanValue ENFORCE_PERSONAL;
+    /** Decide WHICH interactions are protected from our own list rather than Easy Factions' config. */
+    public static final ModConfigSpec.BooleanValue OWN_RESTRICTIONS;
+    /** Our restriction list, used when {@link #OWN_RESTRICTIONS} is on. */
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> RESTRICTED_INTERACTIONS;
+    /** Un-cancel interactions Easy Factions refused that our own list does not protect against. */
+    public static final ModConfigSpec.BooleanValue OVERRIDE_EASY_FACTIONS;
+    /** Keep chests and other item stores owner-only even when right-clicking generally is allowed. */
+    public static final ModConfigSpec.BooleanValue PROTECT_CONTAINERS;
+    /** Permission level that bypasses claim protection entirely. */
+    public static final ModConfigSpec.IntValue BYPASS_PERMISSION_LEVEL;
 
     static {
         ModConfigSpec.Builder b = new ModConfigSpec.Builder();
@@ -162,10 +184,117 @@ public final class TerritoryConfig {
                 .define("adminRequiresCreative", false);
 
         b.pop();
+
+        b.comment("Enforcement of claims. Read this block first if players report that claims do nothing.",
+                        "",
+                        "Easy Factions decides claim protection from its own easy_factions-server.toml. That is a",
+                        "NeoForge SERVER config, and a world may carry an OVERRIDE copy at",
+                        "  <world>/serverconfig/easy_factions-server.toml",
+                        "which silently wins over the one in config/. A world copied between servers, or set up",
+                        "by a host panel or a pack template, can therefore ignore every edit made in config/ with",
+                        "nothing whatsoever in the log to say so. Protection then works in a fresh test world and",
+                        "does nothing on the live server, which is exactly what it looks like when a mod is broken.",
+                        "",
+                        "This block exists so protection no longer depends on that file being the right one.")
+                .push("protection");
+
+        PROTECTION_ENABLED = b
+                .comment("Enforce claim protection from this mod. Turning this off leaves Easy Factions'",
+                        "own enforcement as the only thing standing between a player and someone else's land.")
+                .define("protectionEnabled", true);
+
+        ENFORCE_FACTION = b
+                .comment("Enforce a faction's claims against non-members, for whatever",
+                        "'restrictedInteractions' below covers.",
+                        "Easy Factions checks this correctly in its own code, so this is deliberate belt and",
+                        "braces: it also holds when EF's restriction list has been emptied, when EF's config",
+                        "never loaded from the save, and when another mod un-cancels EF's refusal.")
+                .define("enforceFactionClaims", true);
+
+        ENFORCE_PERSONAL = b
+                .comment("Enforce a player's personal claims against strangers, for whatever",
+                        "'restrictedInteractions' below covers.",
+                        "Easy Factions CANNOT do this: its check asks whether the chunk belongs to the claim's",
+                        "owner, which is true for any claimed chunk, and never looks at the player standing",
+                        "there. Every personal claim permits everybody until this is on.")
+                .define("enforcePersonalClaims", true);
+
+        OWN_RESTRICTIONS = b
+                .comment("Take the list of protected interactions from 'restrictedInteractions' below rather",
+                        "than from Easy Factions' factionClaimRestrictions / coreClaimRestrictions.",
+                        "On by default, because EF's lists come from a per-save config file that is easy to",
+                        "leave stale and impossible to notice: an empty list there silently disables all",
+                        "protection with no warning in the log. Set to false to hand the decision back to EF.")
+                .define("useOwnRestrictions", true);
+
+        RESTRICTED_INTERACTIONS = b
+                .comment("Interactions a claim protects against, used when useOwnRestrictions is true.",
+                        "Valid values: BREAK_BLOCK, PLACE_BLOCK, RIGHT_CLICK_BLOCK, LEFT_CLICK_BLOCK,",
+                        "RIGHT_CLICK_ITEM, INTERACT_ENTITY, USE_BUCKET, PLAYER_ATTACK, EXPLOSION_DAMAGE,",
+                        "MOB_GRIEFING_DAMAGE, PISTON_MOVE, CONTAINER.",
+                        "",
+                        "THE DEFAULT IS BREAK_BLOCK AND PLACE_BLOCK ONLY: a claim marks out land nobody else",
+                        "may reshape, and stops there. Doors, buttons, levers, beds, chests, animals and items",
+                        "all keep working for anyone who walks in, so a claim is a border rather than a dome.",
+                        "That is deliberately looser than Easy Factions' own default, which protects every kind",
+                        "of interaction and leaves visitors unable to so much as open a gate.",
+                        "",
+                        "Add RIGHT_CLICK_BLOCK to lock doors, buttons and chests to the owner, or just CONTAINER",
+                        "to lock only the things that hold items and leave doors and buttons open to everyone.",
+                        "Anything unrecognised is ignored and reported once at server start.")
+                .defineListAllowEmpty("restrictedInteractions",
+                        List.of("BREAK_BLOCK", "PLACE_BLOCK"),
+                        () -> "BREAK_BLOCK",
+                        TerritoryConfig::validInteraction);
+
+        OVERRIDE_EASY_FACTIONS = b
+                .comment("Allow interactions that Easy Factions refuses but 'restrictedInteractions' above does",
+                        "not protect against.",
+                        "",
+                        "This is what makes that list mean anything in the loosening direction. Easy Factions",
+                        "runs its own handlers first and cancels from its own config, and a list here can only",
+                        "ever ADD refusals on top; taking RIGHT_CLICK_BLOCK out of it would otherwise change",
+                        "nothing at all, because EF has already cancelled the click by the time we are asked.",
+                        "Only a refusal Easy Factions actually made is undone, and only inside a claimed chunk,",
+                        "so another protection mod's refusal is never touched.",
+                        "",
+                        "Turn this off if you would rather edit easy_factions-server.toml directly - but note",
+                        "that file is per-save and easy to edit the wrong copy of. See the block comment above.")
+                .define("overrideEasyFactions", true);
+
+        PROTECT_CONTAINERS = b
+                .comment("Keep chests, barrels, shulkers, hoppers, furnaces and brewing stands owner-only even",
+                        "when right-clicking blocks generally is allowed.",
+                        "",
+                        "OFF by default, matching the default restriction list: a claim stops the land being",
+                        "reshaped, and what you leave lying about inside it is your own risk. Turn it on for a",
+                        "server that wants players to be able to walk in and use doors but not empty the chests.",
+                        "Ignored when RIGHT_CLICK_BLOCK is in the list above, which already covers containers.")
+                .define("protectContainers", false);
+
+        BYPASS_PERMISSION_LEVEL = b
+                .comment("Permission level that ignores claim protection completely.",
+                        "Default 2, matching Easy Factions. RAISE THIS TO 4 if your server hands out level 2",
+                        "widely (LuckPerms groups, FTB Ranks, a blanket op list): at level 2 those players",
+                        "walk through every claim on the server and it looks exactly like protection being",
+                        "broken. Level 4 restricts the bypass to genuine server owners.")
+                .defineInRange("bypassPermissionLevel", 2, 1, 4);
+
+        b.pop();
         SPEC = b.build();
     }
 
     private TerritoryConfig() {}
+
+    private static boolean validInteraction(Object o) {
+        if (!(o instanceof String s)) return false;
+        try {
+            Interaction.valueOf(s.trim().toUpperCase(java.util.Locale.ROOT));
+            return true;
+        } catch (IllegalArgumentException e) {
+            return false;
+        }
+    }
 
     // ---- use-time getters (config is loaded by the time any of these is called) ----
 
@@ -202,6 +331,82 @@ public final class TerritoryConfig {
     public static int killerShareOf(int lost) {
         if (lost <= 0) return 0;
         return (int) ((long) lost * killerSharePercent() / 100L);
+    }
+
+    public static boolean protectionEnabled() { return PROTECTION_ENABLED.get(); }
+    public static boolean enforceFactionClaims() { return ENFORCE_FACTION.get(); }
+    public static boolean enforcePersonalClaims() { return ENFORCE_PERSONAL.get(); }
+    public static boolean useOwnRestrictions() { return OWN_RESTRICTIONS.get(); }
+    public static boolean overrideEasyFactions() { return OVERRIDE_EASY_FACTIONS.get(); }
+    public static int bypassPermissionLevel() { return BYPASS_PERMISSION_LEVEL.get(); }
+
+    /**
+     * Whether opening something that holds items is protected.
+     *
+     * True when containers are called out on their own, and also whenever right-clicking blocks is protected
+     * outright, since a chest is a block you right-click and a list saying otherwise would contradict itself.
+     */
+    public static boolean protectContainers() {
+        if (!useOwnRestrictions()) return false;      // Easy Factions' RIGHT_CLICK_BLOCK is the whole answer
+        Set<Interaction> list = restrictedInteractions();
+        return PROTECT_CONTAINERS.get()
+                || list.contains(Interaction.CONTAINER)
+                || list.contains(Interaction.RIGHT_CLICK_BLOCK);
+    }
+
+    /**
+     * The configured restriction list, parsed once per config load.
+     *
+     * Block breaking asks this question several times a second, so the strings are turned into an EnumSet and
+     * kept until the underlying list object is replaced, which is what a config reload does. Entries that are
+     * not interaction names are dropped here rather than throwing; {@link #unknownInteractions()} reports them
+     * so a typo surfaces in the log instead of silently narrowing what a claim protects.
+     */
+    public static Set<Interaction> restrictedInteractions() {
+        List<? extends String> source = RESTRICTED_INTERACTIONS.get();
+        Cache cache = parsed;
+        if (cache != null && cache.source == source) return cache.set;
+        EnumSet<Interaction> set = EnumSet.noneOf(Interaction.class);
+        List<String> bad = new java.util.ArrayList<>();
+        for (String raw : source) {
+            if (raw == null) continue;
+            try {
+                set.add(Interaction.valueOf(raw.trim().toUpperCase(java.util.Locale.ROOT)));
+            } catch (IllegalArgumentException e) {
+                bad.add(raw);
+            }
+        }
+        parsed = new Cache(source, java.util.Collections.unmodifiableSet(set), List.copyOf(bad));
+        return parsed.set;
+    }
+
+    /** Entries of {@code restrictedInteractions} that are not interaction names, for the startup report. */
+    public static List<String> unknownInteractions() {
+        restrictedInteractions();
+        Cache cache = parsed;
+        return cache == null ? List.of() : cache.unknown;
+    }
+
+    private record Cache(List<? extends String> source, Set<Interaction> set, List<String> unknown) {}
+
+    private static volatile Cache parsed;
+
+    /**
+     * Server configs this world overrides, given its save folder.
+     *
+     * NeoForge reads {@code config/<mod>-server.toml}, but a file of the same name under the save's
+     * {@code serverconfig/} folder replaces it outright, and that substitution is never logged. It is a real
+     * trap for a world that moved between servers or came out of a pack template: the file an admin edits is
+     * simply not the file being read, and every symptom points at the mod instead.
+     */
+    public static List<String> perWorldConfigOverrides(java.nio.file.Path worldRoot) {
+        java.nio.file.Path dir = worldRoot.resolve("serverconfig");
+        if (!java.nio.file.Files.isDirectory(dir)) return List.of();
+        List<String> found = new java.util.ArrayList<>();
+        for (String name : new String[]{"easy_factions-server.toml", "territory-server.toml"}) {
+            if (java.nio.file.Files.isRegularFile(dir.resolve(name))) found.add(name);
+        }
+        return List.copyOf(found);
     }
 
     /** Emerald price derived from the SDM cost and the exchange rate (rounded up, never negative). */

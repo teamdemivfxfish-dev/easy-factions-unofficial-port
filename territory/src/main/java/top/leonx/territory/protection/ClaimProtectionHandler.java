@@ -8,9 +8,11 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BucketItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.Container;
 import net.minecraft.world.item.MobBucketItem;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
@@ -20,6 +22,10 @@ import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
 import net.neoforged.neoforge.event.level.PistonEvent;
+import net.neoforged.neoforge.event.server.ServerStartedEvent;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import top.leonx.territory.TerritoryConfig;
 import top.leonx.territory.TerritoryMod;
 import top.leonx.territory.integration.EasyFactionsBridge;
 import top.leonx.territory.integration.EasyFactionsBridge.Decision;
@@ -57,9 +63,58 @@ public final class ClaimProtectionHandler {
 
     private ClaimProtectionHandler() {}
 
+    private static final Logger LOG = LoggerFactory.getLogger("territory-protection");
+
     /** Last game tick each player was told off, so holding a mouse button cannot spam their action bar. */
     private static final Map<UUID, Long> LAST_WARNING = new HashMap<>();
     private static final long WARNING_COOLDOWN_TICKS = 40L;
+
+    /**
+     * Say plainly, once, what protection is actually going to do on this server.
+     *
+     * A silent mod is indistinguishable from a broken one, and every cause of "claims stopped working" found
+     * so far has been invisible: a config read from a file nobody edited, an empty restriction list, a rank
+     * that bypasses everything. All of it is printed here so the answer is in the log before the complaint is.
+     */
+    @SubscribeEvent
+    public static void onServerStarted(ServerStartedEvent event) {
+        if (!EasyFactionsBridge.loaded()) {
+            LOG.warn("Easy Factions is not loaded; Territory claim protection is inactive.");
+            return;
+        }
+        if (!TerritoryConfig.protectionEnabled()) {
+            LOG.warn("protectionEnabled=false in territory-server.toml: claims are enforced by Easy Factions "
+                    + "alone, which cannot enforce personal claims at all.");
+            return;
+        }
+        LOG.info("Claim protection active. faction={} personal={} ownRestrictionList={} bypassPermissionLevel={}",
+                TerritoryConfig.enforceFactionClaims(), TerritoryConfig.enforcePersonalClaims(),
+                TerritoryConfig.useOwnRestrictions(), TerritoryConfig.bypassPermissionLevel());
+        LOG.info("Protected interactions: {}. Containers are {}. Easy Factions' wider refusals are {}.",
+                TerritoryConfig.restrictedInteractions(),
+                TerritoryConfig.protectContainers() ? "owner-only" : "open to everyone",
+                TerritoryConfig.overrideEasyFactions() ? "undone to match that list" : "left in place");
+
+        List<String> unknown = TerritoryConfig.unknownInteractions();
+        if (!unknown.isEmpty()) {
+            LOG.warn("Ignoring unrecognised entries in restrictedInteractions: {}", unknown);
+        }
+        if (TerritoryConfig.restrictedInteractions().isEmpty() && TerritoryConfig.useOwnRestrictions()) {
+            LOG.warn("restrictedInteractions is EMPTY: claims will protect nothing.");
+        }
+        for (String warning : EasyFactionsBridge.protectionWarnings()) {
+            LOG.warn(warning);
+        }
+        List<String> overrides = TerritoryConfig.perWorldConfigOverrides(
+                event.getServer().getWorldPath(LevelResource.ROOT));
+        if (!overrides.isEmpty()) {
+            LOG.warn("This world overrides {} from its own serverconfig folder. Those copies WIN over "
+                    + "config/, so edits made in config/ are being ignored. Edit the copies under "
+                    + "<world>/serverconfig/ instead, or delete them.", overrides);
+        }
+        LOG.info("Run /territory diagnose in game to see what a claim actually decides for the chunk you "
+                + "are standing in.");
+    }
 
     // ---- block / item / entity interactions ----------------------------------------------------------
 
@@ -76,8 +131,11 @@ public final class ClaimProtectionHandler {
 
     @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
     public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
-        // buckets are their own switch in Easy Factions; everything else is a plain block use
-        Interaction type = isBucket(event.getItemStack()) ? Interaction.USE_BUCKET : Interaction.RIGHT_CLICK_BLOCK;
+        // buckets are their own switch in Easy Factions; a chest is a switch of OUR own, so that a server can
+        // let visitors open doors without also handing them everything stored behind those doors
+        Interaction type = isBucket(event.getItemStack()) ? Interaction.USE_BUCKET
+                : isContainer(event.getLevel(), event.getPos()) ? Interaction.CONTAINER
+                : Interaction.RIGHT_CLICK_BLOCK;
         apply(event.getEntity(), event.getPos(), type, event::setCanceled, event.isCanceled());
     }
 
@@ -202,5 +260,20 @@ public final class ClaimProtectionHandler {
 
     private static boolean isBucket(ItemStack stack) {
         return stack.getItem() instanceof BucketItem || stack.getItem() instanceof MobBucketItem;
+    }
+
+    /**
+     * Whether the block at {@code pos} is something that STORES ITEMS: a chest, barrel, shulker, hopper,
+     * furnace, brewing stand, dispenser, or any modded block entity built on the same interface.
+     *
+     * Deliberately tested by asking the block entity, not by listing block types. A crafting table, an
+     * anvil and an enchanting table all open a screen without holding anything, so none of them counts and
+     * none of them is affected by the container switch. An ender chest holds no inventory of its own — what
+     * it opens is the player's — so it is not a container here either.
+     */
+    private static boolean isContainer(Level level, BlockPos pos) {
+        // never force-load a chunk to answer a permission question; an unloaded chunk cannot be clicked
+        if (level == null || !level.isLoaded(pos)) return false;
+        return level.getBlockEntity(pos) instanceof Container;
     }
 }
