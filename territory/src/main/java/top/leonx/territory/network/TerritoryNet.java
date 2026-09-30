@@ -13,6 +13,7 @@ import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 import top.leonx.territory.TerritoryConfig;
 import top.leonx.territory.TerritoryMod;
 import top.leonx.territory.integration.EasyFactionsBridge;
+import top.leonx.territory.integration.MineColoniesBridge;
 import top.leonx.territory.world.TerritoryNames;
 
 import java.util.ArrayList;
@@ -203,11 +204,17 @@ public final class TerritoryNet {
         for (EasyFactionsBridge.Relation r : info.relations()) {
             relations.add(new FactionInfoS2C.Relation(r.faction(), r.status()));
         }
+        // What the NEXT set of claims costs this faction, not a fixed shop price: the ladder climbs with
+        // what the faction has already bought, and the Faction tab has to quote the number the button will
+        // actually charge or the two disagree in front of the player.
+        long price = TerritoryConfig.purchaseRun(info.bonusClaims(), TerritoryConfig.claimsPerPurchase());
+        int emeralds = (int) Math.min(Integer.MAX_VALUE,
+                top.leonx.territory.integration.ClaimEconomy.emeraldsFor(price));
         FactionInfoS2C out = new FactionInfoS2C(info.efLoaded(), info.inFaction(), info.name(), info.color(),
                 info.abbreviation(), info.isOwner(), info.isOfficer(), info.friendlyFire(), info.ownerName(),
                 members, info.invitesForViewer(), relations,
                 info.factionCap(), info.factionUsed(), info.bonusClaims(),
-                TerritoryConfig.costSdm(), TerritoryConfig.costEmeralds(), TerritoryConfig.claimsPerPurchase(),
+                price, emeralds, TerritoryConfig.claimsPerPurchase(),
                 TerritoryConfig.buyEnabled());
         PacketDistributor.sendToPlayer(sp, out);
     }
@@ -257,6 +264,22 @@ public final class TerritoryNet {
                     z.chunks(), z.members()));
         }
 
+        // The colonies under the same square. They are not claims and are not owned by anybody on Easy
+        // Factions' books, so they travel in their own list with their own name table: a town called
+        // Ravenhold and a faction called Ravenhold must never end up sharing a label index.
+        List<String> colonyNames = new ArrayList<>();
+        Map<String, Integer> colonyIndex = new HashMap<>();
+        List<TerritoryDataS2C.ColonyCell> colonyCells = new ArrayList<>();
+        for (MineColoniesBridge.ColonyCell cell : MineColoniesBridge.colonyCellsIn(server,
+                sp.level().dimension(), center, radius, sp.getUUID())) {
+            int idx = colonyIndex.computeIfAbsent(cell.name(), k -> {
+                colonyNames.add(k);
+                return colonyNames.size() - 1;
+            });
+            colonyCells.add(new TerritoryDataS2C.ColonyCell(cell.x(), cell.z(), idx, cell.trusted()));
+        }
+        boolean colonyBlocksClaims = MineColoniesBridge.usable() && TerritoryConfig.respectColonyClaims();
+
         TerritoryNames names = TerritoryNames.get(server);
         String personalName = names.getName(sp.getUUID());
         int personalColor = names.getColor(sp.getUUID());
@@ -266,7 +289,8 @@ public final class TerritoryNet {
                 c.efLoaded(), c.inFaction(), c.canFactionClaim(), c.canAdminClaim(), c.canPersonalClaim(),
                 c.factionName(), c.factionColor(),
                 c.coreCap(), c.coreUsed(), c.factionCap(), c.factionUsed(),
-                personalName, personalColor, owners, entries, zones);
+                personalName, personalColor, owners, entries, zones,
+                colonyNames, colonyCells, colonyBlocksClaims);
         PacketDistributor.sendToPlayer(sp, data);
     }
 }

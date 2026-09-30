@@ -67,8 +67,13 @@ Both projects expect their compile-time dependency jars in a local `libs/` direc
 
 - `territory` and `efwarborn` both need the Easy Factions port jar.
 - Both optionally compile against `sdmeconomy-neoforge-1.21.1-2.4.0.jar` for currency support.
+- `territory` also compiles against `minecolonies-1.1.1357-1.21.1-snapshot.jar` for the colony integration (optional at runtime).
 
-The released file is assembled by merging the compiled `efwarborn` and `territory` classes into the Easy Factions port jar and declaring all three mods in a single `neoforge.mods.toml`.
+The released file is assembled by merging the compiled `efwarborn` and `territory` classes into the Easy Factions port jar and declaring all three mods in a single `neoforge.mods.toml`. `tools/merge_release.py` does this for `territory`:
+
+```
+python tools/merge_release.py <previous release jar> territory/build/libs/<territory jar> <version> <output jar>
+```
 
 ## Known issues
 

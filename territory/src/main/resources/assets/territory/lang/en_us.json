@@ -120,5 +120,9 @@
   "gui.territory.faction.sub.members": "Members",
   "gui.territory.faction.sub.invites": "Invites",
   "gui.territory.faction.sub.relations": "Relations",
-  "gui.territory.faction.sub.options": "Options"
+  "gui.territory.faction.sub.options": "Options",
+  "gui.territory.colony_land": "%s is a colony. A colony outranks a claim.",
+  "gui.territory.colony_legend": "Outlined land is a colony",
+  "message.territory.entered": "You entered %s",
+  "message.territory.entered_wilderness": "Wilderness"
 }

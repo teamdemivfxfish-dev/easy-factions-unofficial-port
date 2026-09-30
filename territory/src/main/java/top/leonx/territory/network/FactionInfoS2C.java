@@ -13,6 +13,10 @@ import java.util.List;
  * Server -> client: the Faction tab's roster + the viewer's role, so the tab can render the member list
  * and gate its action buttons. When the viewer is not in a faction, {@code invites} lists factions that
  * have invited them (for Join buttons).
+ *
+ * {@code costSdm} / {@code costEmerald} are what this faction's NEXT purchase costs, priced when the packet
+ * is built. They are not a fixed shop price: the price climbs with how many claims the faction has already
+ * bought, so it is quoted per faction and re-sent whenever the tab is refreshed.
  */
 public record FactionInfoS2C(boolean efLoaded, boolean inFaction, String name, int color, String abbreviation,
                              boolean isOwner, boolean isOfficer, boolean friendlyFire, String ownerName,

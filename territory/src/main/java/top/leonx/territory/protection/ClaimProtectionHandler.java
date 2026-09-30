@@ -29,6 +29,7 @@ import top.leonx.territory.TerritoryConfig;
 import top.leonx.territory.TerritoryMod;
 import top.leonx.territory.integration.EasyFactionsBridge;
 import top.leonx.territory.integration.EasyFactionsBridge.Decision;
+import top.leonx.territory.integration.MineColoniesBridge;
 import top.leonx.territory.world.Interaction;
 
 import java.util.ArrayList;
@@ -94,6 +95,24 @@ public final class ClaimProtectionHandler {
                 TerritoryConfig.restrictedInteractions(),
                 TerritoryConfig.protectContainers() ? "owner-only" : "open to everyone",
                 TerritoryConfig.overrideEasyFactions() ? "undone to match that list" : "left in place");
+
+        if (!MineColoniesBridge.loaded()) {
+            LOG.info("MineColonies is not installed; colony priority over claims is inactive.");
+        } else if (!TerritoryConfig.respectColonyClaims() && !TerritoryConfig.colonyMembersKeepTheirLand()) {
+            LOG.warn("MineColonies is installed but colony priority is switched OFF on both counts. Factions "
+                    + "can claim other people's colonies, and a colony's own members can be locked out of "
+                    + "their town by a rival claim.");
+        } else if (!MineColoniesBridge.selfTest(event.getServer())) {
+            LOG.error("MineColonies is installed but its claim API did not answer, so colony land cannot be "
+                    + "told apart from open ground. Colony priority is OFF for this run: factions CAN claim "
+                    + "other people's colonies. See the error logged above this line.");
+        } else {
+            LOG.info("MineColonies found and answering. Colonies outrank claims: claiming another colony is "
+                    + "{}, and a colony's own people are {} inside it.",
+                    TerritoryConfig.respectColonyClaims() ? "refused" : "ALLOWED (respectColonyClaims=false)",
+                    TerritoryConfig.colonyMembersKeepTheirLand() ? "free" : "NOT exempt "
+                            + "(colonyMembersKeepTheirLand=false)");
+        }
 
         List<String> unknown = TerritoryConfig.unknownInteractions();
         if (!unknown.isEmpty()) {

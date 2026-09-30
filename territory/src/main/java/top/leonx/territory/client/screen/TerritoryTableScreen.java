@@ -77,6 +77,17 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     /** A child plot drawn over its parent, in the plot's own colour. */
     private static final int A_CHILD = 0x77000000;
 
+    /**
+     * MineColonies land: a wash of colour under the claims and a solid line around the town's edge.
+     *
+     * Deliberately one fixed colour for every colony rather than anything a player picks, because it is not
+     * a claim and must not read as one. It is the ground a faction cannot take, drawn from MineColonies'
+     * own chunk data, and a border round the outside is the only way to see where a town actually ends.
+     */
+    private static final int A_COLONY = 0x442FD8C0;
+    private static final int A_COLONY_MINE = 0x662FD8C0;
+    private static final int COLONY_BORDER = 0xFF2FD8C0;
+
     /** Half-brightness version of a colour, for land that is greyed out rather than hidden. */
     private static int dim(int rgb) {
         int r = ((rgb >> 16) & 0xFF) / 2, gr = ((rgb >> 8) & 0xFF) / 2, b = (rgb & 0xFF) / 2;
@@ -95,6 +106,13 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private final Set<Long> stagedAdd = new HashSet<>();
     private final Set<Long> stagedRemove = new HashSet<>();
     private final List<Cluster> clusters = new ArrayList<>();
+    /** Colony land in view: chunk -> index into the colony name list. Rebuilt with every server refresh. */
+    private final Map<Long, Integer> colonyAt = new HashMap<>();
+    /** Colony chunks this player may not claim, kept apart from {@code forbidden} so it can be explained. */
+    private final Set<Long> colonyBlocked = new HashSet<>();
+    /** Colony chunks belonging to a town this player is part of, drawn brighter and still claimable. */
+    private final Set<Long> colonyMine = new HashSet<>();
+    private final List<Cluster> colonyClusters = new ArrayList<>();
     private TerritoryDataS2C data;
     private boolean initialized = false;
     private String lastTypedName = null;
@@ -219,6 +237,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         forbidden.clear();
         clusters.clear();
         if (data == null) return;
+        recomputeColonies();
         if (child()) {
             recomputeChildSets();
             computeClusters();
@@ -231,9 +250,67 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             if (e.kind() == mineKind) mineSet.add(key);
             else forbidden.add(key);
         }
+        // A colony is not a claim, so it is not in the list above, and the server will refuse a selection
+        // that touches one. Refusing it here as well is what stops the player painting a swath across a
+        // town and having the whole commit rejected for a chunk they could not see.
+        if (!adminSide()) forbidden.addAll(colonyBlocked);
         stagedAdd.removeIf(k -> mineSet.contains(k) || forbidden.contains(k));
         stagedRemove.removeIf(k -> !mineSet.contains(k));
         computeClusters();
+    }
+
+    /**
+     * The colonies under the current view: where they are, which of them this player belongs to, and where
+     * to write their names.
+     *
+     * A colony the player is part of is drawn but not blocked, matching the server: fencing your OWN town
+     * inside your faction's border is the reasonable thing to want, and it is only somebody else's town
+     * that this protects.
+     */
+    private void recomputeColonies() {
+        colonyAt.clear();
+        colonyBlocked.clear();
+        colonyMine.clear();
+        colonyClusters.clear();
+        if (data == null || data.colonies().isEmpty()) return;
+        for (TerritoryDataS2C.ColonyCell c : data.colonies()) {
+            long key = ChunkPos.asLong(c.x(), c.z());
+            colonyAt.put(key, c.nameIdx());
+            if (c.trusted()) colonyMine.add(key);
+            else if (data.colonyBlocksClaims()) colonyBlocked.add(key);
+        }
+        computeColonyClusters();
+    }
+
+    /** One label per contiguous run of one colony's chunks, placed at its centre, as claims are labelled. */
+    private void computeColonyClusters() {
+        Set<Long> seen = new HashSet<>();
+        for (Map.Entry<Long, Integer> start : colonyAt.entrySet()) {
+            if (!seen.add(start.getKey())) continue;
+            int colony = start.getValue();
+            ArrayDeque<Long> q = new ArrayDeque<>();
+            q.add(start.getKey());
+            double sumX = 0, sumZ = 0;
+            int count = 0;
+            while (!q.isEmpty()) {
+                long c = q.poll();
+                int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
+                sumX += cx;
+                sumZ += cz;
+                count++;
+                for (long n : new long[]{ChunkPos.asLong(cx + 1, cz), ChunkPos.asLong(cx - 1, cz),
+                        ChunkPos.asLong(cx, cz + 1), ChunkPos.asLong(cx, cz - 1)}) {
+                    Integer other = colonyAt.get(n);
+                    if (other != null && other == colony && seen.add(n)) q.add(n);
+                }
+            }
+            colonyClusters.add(new Cluster(sumX / count + 0.5, sumZ / count + 0.5, colonyName(colony)));
+        }
+    }
+
+    private String colonyName(int idx) {
+        if (data == null || idx < 0 || idx >= data.colonyNames().size()) return "";
+        return data.colonyNames().get(idx);
     }
 
     /**
@@ -675,6 +752,12 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     private void toggleChunk(int cx, int cz) {
         long key = ChunkPos.asLong(cx, cz);
+        // said out loud rather than ignored: a chunk that refuses to select with no explanation is the
+        // single most confusing thing this map can do, and colony land is now the commonest reason for it
+        if (colonyBlocked.contains(key)) {
+            messageActionBar("gui.territory.colony_land", colonyName(colonyAt.getOrDefault(key, -1)));
+            return;
+        }
         if (forbidden.contains(key)) return;
         if (stagedAdd.contains(key)) {
             stagedAdd.remove(key);
@@ -719,6 +802,12 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private void messageActionBar(String key) {
         if (minecraft != null && minecraft.player != null) {
             minecraft.player.displayClientMessage(Component.translatable(key), true);
+        }
+    }
+
+    private void messageActionBar(String key, Object... args) {
+        if (minecraft != null && minecraft.player != null) {
+            minecraft.player.displayClientMessage(Component.translatable(key, args), true);
         }
     }
 
@@ -923,9 +1012,14 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             }
             y += ROW_H;
         }
-        if (zone.members().isEmpty() && y - ROW_H + ROW_H >= permListY) {
-            g.drawString(font, Component.translatable("gui.territory.perm.no_members"),
-                    permDetX + 8, y - ROW_H + 3, TEXT_DIM, false);
+        // the empty note is a row of its own; drawing it back at the heading's y printed the two on
+        // top of each other, which is what "Trusted players (0)" looked like smeared over "Nobody yet"
+        if (zone.members().isEmpty()) {
+            if (y + ROW_H >= permListY && y <= bodyBottom) {
+                g.drawString(font, Component.translatable("gui.territory.perm.no_members"),
+                        permDetX + 8, y + 3, TEXT_DIM, false);
+            }
+            y += ROW_H;
         }
 
         g.disableScissor();
@@ -1058,6 +1152,15 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
                     else outlineCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, TITLE_GOLD);
                 }
             }
+            // The towns under the map. Drawn over the claims on purpose: where a faction claim is still
+            // sitting on a colony, the colony is the thing that decides what happens there, and the map has
+            // to say so rather than showing a clean faction border over somebody's houses.
+            for (Map.Entry<Long, Integer> e : colonyAt.entrySet()) {
+                long key = e.getKey();
+                drawCell(g, ChunkPos.getX(key), ChunkPos.getZ(key), leftX, topZ, cell, mx0, my0,
+                        colonyMine.contains(key) ? A_COLONY_MINE : A_COLONY, false);
+            }
+            drawColonyBorders(g, leftX, topZ, cell, mx0, my0);
             for (long key : stagedAdd) {
                 drawCell(g, ChunkPos.getX(key), ChunkPos.getZ(key), leftX, topZ, cell, mx0, my0, A_ADD, true);
             }
@@ -1072,6 +1175,17 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             int w = font.width(c.label);
             g.fill(lx - w / 2 - 2, ly - 5, lx + w / 2 + 2, ly + 5, 0xAA000000);
             g.drawCenteredString(font, c.label, lx, ly - 4, 0xFFFFFFFF);
+        }
+        // Colony names sit under the claim labels rather than on top of them: where both exist on one chunk
+        // the claim is the thing being edited, and the town is the thing being respected.
+        for (Cluster c : colonyClusters) {
+            if (c.label.isEmpty()) continue;
+            int lx = mx0 + (int) ((c.cx - leftX) * cell);
+            int ly = my0 + (int) ((c.cz - topZ) * cell);
+            if (lx < mx0 || lx > mx0 + mapPx || ly < my0 || ly > my0 + mapPx) continue;
+            int w = font.width(c.label);
+            g.fill(lx - w / 2 - 2, ly + 6, lx + w / 2 + 2, ly + 16, 0xAA000000);
+            g.drawCenteredString(font, c.label, lx, ly + 7, COLONY_BORDER);
         }
         g.disableScissor();
         g.renderOutline(mx0 - 1, my0 - 1, mapPx + 2, mapPx + 2, OUTLINE_GOLD);
@@ -1115,6 +1229,49 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         }
         g.drawCenteredString(font, Component.translatable("gui.territory.zoom", SPANS[zoom]),
                 cx + ctrlW / 2, y + 132, TEXT_DIM);
+
+        renderColonyLegend(g, cx, y);
+    }
+
+    /**
+     * The one legend the map still needs.
+     *
+     * The two price lines that used to sit here quoted what a selection would cost to put down, which was
+     * true and is now wrong: land is bought on the Faction tab and placed for nothing.
+     */
+    private void renderColonyLegend(GuiGraphics g, int cx, int y) {
+        if (colonyAt.isEmpty()) return;
+        g.drawString(font, Component.translatable("gui.territory.colony_legend"), cx, y + 152,
+                COLONY_BORDER, false);
+    }
+
+    /**
+     * A solid line down every edge where a colony stops.
+     *
+     * Drawn from the chunk data rather than from anything MineColonies hands over as a shape, so it is the
+     * same set of chunks the claiming gate refuses: what the player sees outlined is exactly what they
+     * cannot take. Two colonies that touch get a line between them, since the edge belongs to both.
+     */
+    private void drawColonyBorders(GuiGraphics g, double leftX, double topZ, float cell, int mx0, int my0) {
+        int t = Math.max(1, Math.round(cell / 12f));
+        for (Map.Entry<Long, Integer> e : colonyAt.entrySet()) {
+            long key = e.getKey();
+            int cx = ChunkPos.getX(key), cz = ChunkPos.getZ(key);
+            int id = e.getValue();
+            int px0 = mx0 + Math.round((float) ((cx - leftX) * cell));
+            int pz0 = my0 + Math.round((float) ((cz - topZ) * cell));
+            int px1 = mx0 + Math.round((float) ((cx + 1 - leftX) * cell));
+            int pz1 = my0 + Math.round((float) ((cz + 1 - topZ) * cell));
+            if (!sameColony(cx, cz - 1, id)) g.fill(px0, pz0, px1, pz0 + t, COLONY_BORDER);
+            if (!sameColony(cx, cz + 1, id)) g.fill(px0, pz1 - t, px1, pz1, COLONY_BORDER);
+            if (!sameColony(cx - 1, cz, id)) g.fill(px0, pz0, px0 + t, pz1, COLONY_BORDER);
+            if (!sameColony(cx + 1, cz, id)) g.fill(px1 - t, pz0, px1, pz1, COLONY_BORDER);
+        }
+    }
+
+    private boolean sameColony(int cx, int cz, int id) {
+        Integer other = colonyAt.get(ChunkPos.asLong(cx, cz));
+        return other != null && other == id;
     }
 
     private void drawCell(GuiGraphics g, int cx, int cz, double leftX, double topZ, float cell,

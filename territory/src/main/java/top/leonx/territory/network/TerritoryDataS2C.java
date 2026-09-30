@@ -27,7 +27,9 @@ public record TerritoryDataS2C(boolean efLoaded, boolean inFaction, boolean canF
                                int coreCap, int coreUsed, int factionCap, int factionUsed,
                                String personalName, int personalColor,
                                List<String> owners, List<ClaimEntry> claims,
-                               List<AdminZone> adminZones) implements CustomPacketPayload {
+                               List<AdminZone> adminZones,
+                               List<String> colonyNames, List<ColonyCell> colonies, boolean colonyBlocksClaims)
+        implements CustomPacketPayload {
 
     /**
      * One claimed chunk: coords + KIND + the claim's EF colour (RGB) + index into the owners label list.
@@ -42,6 +44,15 @@ public record TerritoryDataS2C(boolean efLoaded, boolean inFaction, boolean canF
      */
     public record AdminZone(String name, String parent, int color, int perms, boolean custom, int chunks,
                             List<String> members) {}
+
+    /**
+     * One chunk of MineColonies land under the map, so the claim map can draw the town that is really there.
+     *
+     * {@code nameIdx} indexes {@code colonyNames} rather than the claim owners list: a colony is not a claim
+     * owner and must not be able to collide with a faction of the same name. {@code trusted} says whether
+     * the player looking is one of that colony's own people, which is exactly who may still claim it.
+     */
+    public record ColonyCell(int x, int z, int nameIdx, boolean trusted) {}
 
     public static final Type<TerritoryDataS2C> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath(TerritoryMod.MODID, "data"));
@@ -84,6 +95,16 @@ public record TerritoryDataS2C(boolean efLoaded, boolean inFaction, boolean canF
                     buf.writeVarInt(z.members().size());
                     for (String member : z.members()) buf.writeUtf(member);
                 }
+                buf.writeVarInt(m.colonyNames.size());
+                for (String name : m.colonyNames) buf.writeUtf(name);
+                buf.writeVarInt(m.colonies.size());
+                for (ColonyCell c : m.colonies) {
+                    buf.writeVarInt(c.x());
+                    buf.writeVarInt(c.z());
+                    buf.writeVarInt(c.nameIdx());
+                    buf.writeBoolean(c.trusted());
+                }
+                buf.writeBoolean(m.colonyBlocksClaims);
             },
             buf -> {
                 boolean efLoaded = buf.readBoolean();
@@ -122,9 +143,20 @@ public record TerritoryDataS2C(boolean efLoaded, boolean inFaction, boolean canF
                     for (int j = 0; j < memberCount; j++) members.add(buf.readUtf());
                     zones.add(new AdminZone(name, parent, color, perms, custom, chunks, members));
                 }
+                int colonyNameCount = buf.readVarInt();
+                List<String> colonyNames = new ArrayList<>(colonyNameCount);
+                for (int i = 0; i < colonyNameCount; i++) colonyNames.add(buf.readUtf());
+                int colonyCount = buf.readVarInt();
+                List<ColonyCell> colonies = new ArrayList<>(colonyCount);
+                for (int i = 0; i < colonyCount; i++) {
+                    colonies.add(new ColonyCell(buf.readVarInt(), buf.readVarInt(), buf.readVarInt(),
+                            buf.readBoolean()));
+                }
+                boolean colonyBlocksClaims = buf.readBoolean();
                 return new TerritoryDataS2C(efLoaded, inFaction, canFactionClaim, canAdminClaim, canPersonalClaim,
                         factionName, factionColor, coreCap, coreUsed, factionCap, factionUsed,
-                        personalName, personalColor, owners, claims, zones);
+                        personalName, personalColor, owners, claims, zones,
+                        colonyNames, colonies, colonyBlocksClaims);
             });
 
     @Override

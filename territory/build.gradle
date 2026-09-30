@@ -25,6 +25,18 @@ neoForge {
             sourceSet sourceSets.main
         }
     }
+    // Headless boot verification: ./gradlew runServer --offline
+    // run/mods must hold the Easy Factions jar with the territory trees STRIPPED OUT (this run supplies
+    // territory from the source set, and two copies of one modid is a hard crash at mod discovery), plus
+    // MineColonies with structurize + blockui + domum_ornamentum if colony behaviour is being checked.
+    // What this proves is that every class loads and the startup reports say what they should; in-world
+    // behaviour still needs real players.
+    runs {
+        server {
+            server()
+            programArguments.addAll '--nogui'
+        }
+    }
 }
 
 dependencies {
@@ -34,6 +46,10 @@ dependencies {
     // SDM Economy is the default currency for the "Buy Claims" button (optional soft-dep). compileOnly:
     // never bundled, only touched after ModList.isLoaded("sdmeconomy"); absent -> emerald fallback.
     compileOnly files('libs/sdmeconomy-neoforge-1.21.1-2.4.0.jar')
+    // MineColonies outranks every faction claim: a colony's own chunks answer to the colony, not to whoever
+    // painted a claim over them. compileOnly + guarded by ModList.isLoaded("minecolonies"), so a server
+    // without it simply never reaches the code. Never bundled.
+    compileOnly files('libs/minecolonies-1.1.1357-1.21.1-snapshot.jar')
 }
 
 tasks.named('processResources', ProcessResources).configure {

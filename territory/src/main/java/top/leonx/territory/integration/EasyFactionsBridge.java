@@ -24,6 +24,7 @@ import top.leonx.territory.TerritoryConfig;
 import top.leonx.territory.world.AdminPerm;
 import top.leonx.territory.world.AdminTerritories;
 import top.leonx.territory.world.ClaimPenalties;
+import top.leonx.territory.world.ClaimRefunds;
 import top.leonx.territory.world.Interaction;
 import top.leonx.territory.world.PersonalPenalties;
 import top.leonx.territory.world.PurchasedClaims;
@@ -33,6 +34,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -181,6 +183,43 @@ public final class EasyFactionsBridge {
         return f != null && memberCount(f) >= TerritoryConfig.minFactionMembers();
     }
 
+    // ---- who counts as one of yours -------------------------------------------------------------------
+
+    /**
+     * Whether {@code a} and {@code b} are in one faction that has friendly fire switched off.
+     *
+     * The faction's own setting is the whole answer, so a faction that wants to brawl still can. Easy
+     * Factions applies this to one player hitting another and to nothing else; everything a player brings
+     * with them, from a tamed wolf to a summoned skeleton, is a stranger as far as that check is concerned.
+     * This is the question those cases ask.
+     */
+    public static boolean sameSideNoFriendlyFire(MinecraftServer server, UUID a, UUID b) {
+        if (!loaded() || server == null || a == null || b == null || a.equals(b)) return false;
+        FactionStateManager fsm = FactionStateManager.get(server);
+        Faction fa = fsm.getFactionByPlayer(a);
+        if (fa == null) return false;
+        Faction fb = fsm.getFactionByPlayer(b);
+        if (fb == null) return false;
+        if (fa.getName().equals(fb.getName())) return !fa.getFriendlyFire();
+        if (!TerritoryConfig.protectAllies()) return false;
+        // an alliance counts only when BOTH sides have said so: one faction declaring peace at another is a
+        // statement about itself, not a shared health bar
+        return friendlyToward(fa, fb.getName()) && friendlyToward(fb, fa.getName());
+    }
+
+    private static boolean friendlyToward(Faction from, String towards) {
+        if (from.getOutgoingRelations() == null) return false;
+        var relation = from.getOutgoingRelations().get(towards);
+        return relation != null && "FRIENDLY".equals(relation.name());
+    }
+
+    /** The faction {@code player} belongs to, or an empty string. */
+    public static String factionNameOf(MinecraftServer server, UUID player) {
+        if (!loaded() || server == null || player == null) return "";
+        Faction f = FactionStateManager.get(server).getFactionByPlayer(player);
+        return f == null ? "" : f.getName();
+    }
+
     // ---- conquest: killing a rival costs them land ----------------------------------------------------
 
     /** Outcome of one kill. {@code applied} is false when the kill did not qualify (same faction, allied,
@@ -251,6 +290,8 @@ public final class EasyFactionsBridge {
         HashMap<ResourceLocation, List<Long>> rm = new HashMap<>();
         rm.put(dimKey.location(), doomed);
         cm.unclaimChunks(rm, server);      // self-syncing: pushes the unclaim to every tracking client
+        // Land lost in war is lost and no money changes hands: that is what losing means. The capacity it
+        // stood on has already gone to the winner, so there is nothing else left to move.
         return doomed.size();
     }
 
@@ -477,6 +518,15 @@ public final class EasyFactionsBridge {
             if (color == TerritoryNames.NO_COLOR) color = ServerConfig.coreClaimColor;
             cm.claimChunks(claim, ClaimType.CORE, ownerId.toString(), color & 0xFFFFFF, server);
         }
+
+        // The faction's money has to land somewhere: the faction is gone, its name is free for anybody to
+        // take, and a pool held under a dead name would either be lost or picked up by whoever registers it
+        // next. Whatever it was still owed goes to the person who was its owner. The claims it bought are
+        // not sold back: they were the faction's ceiling, and the faction is what just ended.
+        if (ownerId != null) {
+            ClaimRefunds.get(server).transfer(ClaimRefunds.factionKey(factionName),
+                    ClaimRefunds.playerKey(ownerId));
+        }
         return new DisbandResult(keep.size(), released);
     }
 
@@ -684,6 +734,31 @@ public final class EasyFactionsBridge {
             if (!cm.isClaimed(dimKey, cp) && addSet.add(cp.toLong())) safeAdd.add(cp);
         }
 
+        // A colony outranks a faction. Ground somebody else's town stands on is not free land, however empty
+        // the Easy Factions map looks, and the two mods claim chunks in complete ignorance of each other.
+        // Refused as a whole rather than by quietly dropping the offending chunks, so the player is told which
+        // town stopped them instead of watching half a drag-selection fail to appear. Admin claiming skips
+        // this: an operator painting spawn over a colony is doing it on purpose.
+        if (!admin && TerritoryConfig.respectColonyClaims() && MineColoniesBridge.usable()) {
+            for (ChunkPos cp : safeAdd) {
+                String colony = MineColoniesBridge.claimRefusal(server, dimKey, cp, uuid);
+                if (colony != null) {
+                    return "Chunk " + cp.x + ", " + cp.z + " belongs to the colony " + colony
+                            + ". A colony outranks a claim: you cannot claim a town you are not part of.";
+                }
+            }
+        }
+
+        // A border that touches a rival's border is not a border, it is a siege line. Claiming the ring of
+        // chunks around somebody's land takes nothing worth having and makes their land worth less, which is
+        // the whole point of doing it, so a gap of open ground is required between two different owners.
+        // Checked on ADD only: land that is already touching stays where it is and can still be released.
+        if (!admin && TerritoryConfig.claimBufferChunks() > 0) {
+            String tooClose = bufferRefusal(server, cm, fsm, dimKey, safeAdd, addSet, uuid,
+                    faction ? f.getName() : null);
+            if (tooClose != null) return tooClose;
+        }
+
         // contiguity + caps apply to personal/faction; admin claims are unrestricted
         if (!admin) {
             Set<Long> ownerNow = new HashSet<>(ownerChunks(cm, dimKey, faction, myOwnerKey, uuid));
@@ -701,7 +776,10 @@ public final class EasyFactionsBridge {
                                 + " members to claim land.";
                     }
                     int cap = factionCapFor(server, f);   // bought bonus slots, minus capacity lost in war
-                    if (cm.getFactionClaimCount(f.getName()) - removeOk.size() + safeAdd.size() > cap) return "Faction claim limit reached.";
+                    if (cm.getFactionClaimCount(f.getName()) - removeOk.size() + safeAdd.size() > cap) {
+                        return "Faction claim limit reached (" + cap + "). Buy more claims from the Faction"
+                                + " tab of the Territory Table, then place them on the map for free.";
+                    }
                 } else {
                     // the personal cap shrinks when you are killed, so read it rather than the raw config
                     int cap = personalCapFor(server, uuid);
@@ -712,10 +790,15 @@ public final class EasyFactionsBridge {
             }
         }
 
+        // Nothing left can refuse this, so the land moves. No money is taken here and none is handed back:
+        // land is bought at the Buy Claims button and placed for nothing. Charging at both ends billed a
+        // player twice for one chunk, once for the right to hold it and once for holding it.
         if (!removeOk.isEmpty()) {
             HashMap<ResourceLocation, List<Long>> rm = new HashMap<>();
             rm.put(dim, new ArrayList<>(removeOk));
             cm.unclaimChunks(rm, server);
+            // Releasing land IS the refund: the slot it stood on goes back to the owner's ceiling, to be
+            // spent on ground somewhere else. Nothing was paid for the chunk, so nothing is paid back.
             if (admin) {
                 // drop the identity with the claim, or a later admin claim here inherits a stale label,
                 // stale permissions and a stale member list. Also takes the chunk out of any child plot.
@@ -743,8 +826,71 @@ public final class EasyFactionsBridge {
                 cm.claimChunks(ad, ClaimType.CORE, uuid.toString(), color, server);
             }
         }
-        return "";
+        return claimReceipt(safeAdd.size(), removeOk.size());
     }
+
+    /**
+     * What the player is told after a claim goes through: what changed hands.
+     *
+     * There is no price on this line any more because no money moves on it. Land is paid for once, at the
+     * Buy Claims button, and what happens here is only ground arriving or leaving.
+     */
+    private static String claimReceipt(int added, int removed) {
+        StringBuilder msg = new StringBuilder();
+        if (added > 0) msg.append("Claimed ").append(added).append(added == 1 ? " chunk" : " chunks");
+        if (removed > 0) {
+            if (msg.length() > 0) msg.append(", released ").append(removed);
+            else msg.append("Released ").append(removed).append(removed == 1 ? " chunk" : " chunks");
+        }
+        if (msg.length() == 0) return "";
+        return msg.append(".").toString();
+    }
+
+    /**
+     * The claim, if any, that is too close to one of the chunks being taken, as a message.
+     *
+     * Everything the claimant already has standing counts as theirs: their faction's land, their own
+     * personal claims, and their own members' personal claims, so a faction is never pushed away from its
+     * own territory by this. Admin claims are ignored in both directions, since spawn and an arena are meant
+     * to be built up against.
+     */
+    private static String bufferRefusal(MinecraftServer server, ClaimManager cm, FactionStateManager fsm,
+                                        ResourceKey<Level> dimKey, List<ChunkPos> adds, Set<Long> addSet,
+                                        UUID claimant, String factionName) {
+        int buffer = TerritoryConfig.claimBufferChunks();
+        for (ChunkPos cp : adds) {
+            for (int dx = -buffer; dx <= buffer; dx++) {
+                for (int dz = -buffer; dz <= buffer; dz++) {
+                    if (dx == 0 && dz == 0) continue;
+                    ChunkPos near = new ChunkPos(cp.x + dx, cp.z + dz);
+                    if (addSet.contains(near.toLong())) continue;
+                    if (!cm.isClaimed(dimKey, near)) continue;
+                    ClaimData d = cm.getClaim(dimKey, near);
+                    if (d == null || d.type == ClaimType.ADMIN) continue;
+                    if (friendlyClaim(fsm, d, claimant, factionName)) continue;
+                    return "Too close to " + ownerDisplay(server, d) + ". Claims must stay " + buffer
+                            + (buffer == 1 ? " chunk" : " chunks") + " clear of another owner's land.";
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Whether a claim belongs to the claimant, to their faction, or to one of their own members. */
+    private static boolean friendlyClaim(FactionStateManager fsm, ClaimData claim, UUID claimant,
+                                         String factionName) {
+        if (claim.type == ClaimType.FACTION) return factionName != null && factionName.equals(claim.owner);
+        if (claim.type == ClaimType.CORE) {
+            UUID owner = parseUuid(claim.owner);
+            if (owner == null) return false;
+            if (owner.equals(claimant)) return true;
+            if (factionName == null) return false;
+            Faction theirs = fsm.getFactionByPlayer(owner);
+            return theirs != null && factionName.equals(theirs.getName());
+        }
+        return true;
+    }
+
 
     /** Re-claim ALL of the player's personal (CORE) chunks in their current dim with {@code rgb}. */
     public static void recolorPersonal(ServerPlayer player, int rgb) {
@@ -863,6 +1009,13 @@ public final class EasyFactionsBridge {
         // on a server that grants level 2 to a rank, and that alone reads as "claims stopped working".
         if (player.hasPermissions(TerritoryConfig.bypassPermissionLevel())) return Decision.DEFER;
 
+        return colonyPriority(server, player, dim, pos, claim, interaction,
+                claimDecision(server, player, claim, dim, pos, interaction));
+    }
+
+    /** What the claim alone says, before a colony standing on the same chunk is taken into account. */
+    private static Decision claimDecision(MinecraftServer server, Player player, ClaimData claim,
+                                          ResourceKey<Level> dim, ChunkPos pos, Interaction interaction) {
         if (claim.type == ClaimType.CORE) {
             if (!TerritoryConfig.enforcePersonalClaims()) return Decision.DEFER;
             if (!restricts(ClaimType.CORE, interaction)) return relax(ClaimType.CORE, interaction);
@@ -882,6 +1035,43 @@ public final class EasyFactionsBridge {
             return adminDecision(server, player.getUUID(), dim, pos.toLong(), interaction);
         }
         return Decision.DEFER;
+    }
+
+    /**
+     * A colony outranks whatever claim has been painted over it.
+     *
+     * <h2>The colony's own people</h2>
+     * They are freed, not merely left alone. By the time this runs Easy Factions has already refused them,
+     * so returning DEFER would leave a colony's founder unable to break a block in the town they built the
+     * moment a rival drew a border round it. That refusal is undone the same NARROW way {@code relax} undoes
+     * one: only where Easy Factions' own config accounts for the interaction, so a cancellation from any
+     * other protection mod is left standing.
+     *
+     * <h2>Everybody else</h2>
+     * ALLOW becomes DEFER, and nothing else changes. This is the half that answers "the faction claim is
+     * overruling the colony claim": un-cancelling is indiscriminate, it un-cancels for whoever is asking,
+     * and MineColonies' own refusal is not this mod's to reverse. A claim may still ADD a refusal here, so
+     * an outsider standing in a colony inside a rival claim is refused by both and pleases neither.
+     *
+     * <h2>Admin territories are exempt</h2>
+     * An operator painting spawn, an arena or a warzone over a colony has said what they meant, and the
+     * per-territory permission switches are how they said it.
+     */
+    private static Decision colonyPriority(MinecraftServer server, Player player, ResourceKey<Level> dim,
+                                           ChunkPos pos, ClaimData claim, Interaction interaction,
+                                           Decision base) {
+        if (claim.type == ClaimType.ADMIN || !MineColoniesBridge.usable()) return base;
+        List<Integer> colonies = MineColoniesBridge.claimingColonies(server, dim, pos);
+        if (colonies.isEmpty()) return base;
+        if (TerritoryConfig.colonyMembersKeepTheirLand()
+                && MineColoniesBridge.trustedInAll(server, dim, colonies, player.getUUID())) {
+            // ALLOW undoes an Easy Factions refusal; DEFER where there is none to undo. Either way the claim
+            // never gets to refuse them, including where OUR list is the wider of the two and EF would have
+            // let it through: at home, a rival border is not allowed to be the thing that stops them.
+            if (efRestricts(efListFor(claim.type), interaction)) return Decision.ALLOW;
+            return base == Decision.DENY ? Decision.DEFER : base;
+        }
+        return base == Decision.ALLOW ? Decision.DEFER : base;
     }
 
     /**
@@ -943,9 +1133,19 @@ public final class EasyFactionsBridge {
     }
 
     /**
-     * The ruling for an interaction with no player behind it — explosions, mob griefing, pistons. Only admin
-     * territories can override these; personal and faction claims are already handled correctly by Easy
-     * Factions, which decides them purely by claim type.
+     * The ruling for an interaction with no player behind it: explosions, mob griefing, pistons.
+     *
+     * <h2>Why a faction claim gets an answer here at all</h2>
+     * "Not even explosions should be stopped" was the other half of the ask that made claims stop at
+     * breaking and placing, and it never worked, because this used to return DEFER for everything that was
+     * not an admin territory. Easy Factions restricts explosions in its own default list and had already
+     * cancelled by the time we were asked, so taking EXPLOSION_DAMAGE out of our list did nothing at all,
+     * for exactly the reason {@link #relax} exists. Personal and faction claims are now ruled on the same
+     * way as everything else: our list decides, and where it permits something Easy Factions refused, that
+     * refusal is undone.
+     *
+     * Put EXPLOSION_DAMAGE, MOB_GRIEFING_DAMAGE or PISTON_MOVE back into {@code restrictedInteractions} to
+     * have claims stop them again.
      */
     public static Decision decideAmbient(MinecraftServer server, ResourceKey<Level> dim, ChunkPos pos,
                                          Interaction interaction) {
@@ -953,8 +1153,13 @@ public final class EasyFactionsBridge {
         ClaimManager cm = ClaimManager.get(server);
         if (!cm.isClaimed(dim, pos)) return Decision.DEFER;
         ClaimData claim = cm.getClaim(dim, pos);
-        if (claim == null || claim.type != ClaimType.ADMIN) return Decision.DEFER;
-        return adminDecision(server, null, dim, pos.toLong(), interaction);
+        if (claim == null) return Decision.DEFER;
+        if (claim.type == ClaimType.ADMIN) return adminDecision(server, null, dim, pos.toLong(), interaction);
+        if (!TerritoryConfig.protectionEnabled()) return Decision.DEFER;
+        if (claim.type == ClaimType.FACTION && !TerritoryConfig.enforceFactionClaims()) return Decision.DEFER;
+        if (claim.type == ClaimType.CORE && !TerritoryConfig.enforcePersonalClaims()) return Decision.DEFER;
+        // there is no player to exempt: an explosion inside a claim is the same explosion whoever lit it
+        return restricts(claim.type, interaction) ? Decision.DENY : relax(claim.type, interaction);
     }
 
     /**
@@ -972,6 +1177,235 @@ public final class EasyFactionsBridge {
         } catch (IllegalArgumentException e) {
             // our enum has drifted from Easy Factions': treat as unrestricted rather than guess
             return false;
+        }
+    }
+
+    // ---- colony overlaps: claims already sitting on somebody else's town --------------------------------
+
+    /**
+     * One Easy Factions claim standing on colony land that its owner has no part in.
+     *
+     * Prevention only helps the towns nobody has taken yet. A server that has been running without this rule
+     * already has claims sitting on colonies, and the people they were taken from cannot undo it themselves:
+     * releasing a claim is the claim owner's privilege, and the claim owner is the one who took the land.
+     */
+    public record ColonyOverlap(ResourceKey<Level> dim, long chunk, ClaimType type, String owner,
+                                String ownerDisplay, int colonyId, String colonyName) {
+        public int chunkX() { return ChunkPos.getX(chunk); }
+        public int chunkZ() { return ChunkPos.getZ(chunk); }
+
+        public String describe() {
+            String town = colonyName == null || colonyName.isBlank() ? "colony #" + colonyId : colonyName;
+            return "chunk " + chunkX() + ", " + chunkZ() + " in " + dim.location()
+                    + " - " + type + " claim of " + ownerDisplay + " on " + town;
+        }
+    }
+
+    /**
+     * Every claim on the server standing on a colony its owner does not belong to.
+     *
+     * Reads the whole claim map, which is held in memory and keyed by chunk, so nothing here loads a chunk
+     * or a colony. Admin claims are never reported: an operator painting over a colony meant to.
+     */
+    public static List<ColonyOverlap> colonyOverlaps(MinecraftServer server) {
+        List<ColonyOverlap> out = new ArrayList<>();
+        if (!loaded() || server == null || !MineColoniesBridge.usable()) return out;
+        ClaimManager cm = ClaimManager.get(server);
+        for (Map.Entry<ResourceKey<Level>, Map<Long, ClaimData>> perDim : cm.getClaimMap().entrySet()) {
+            ResourceKey<Level> dim = perDim.getKey();
+            if (perDim.getValue() == null) continue;
+            for (Map.Entry<Long, ClaimData> entry : perDim.getValue().entrySet()) {
+                ClaimData claim = entry.getValue();
+                if (claim == null || claim.type == ClaimType.ADMIN) continue;
+                ChunkPos pos = new ChunkPos(entry.getKey());
+                List<Integer> colonies = MineColoniesBridge.claimingColonies(server, dim, pos);
+                if (colonies.isEmpty()) continue;
+                if (claimBelongsToColonies(server, dim, colonies, claim)) continue;
+                int colonyId = colonies.get(0);
+                out.add(new ColonyOverlap(dim, entry.getKey(), claim.type, claim.owner,
+                        ownerDisplay(server, claim), colonyId,
+                        MineColoniesBridge.colonyName(server, dim, colonyId)));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Release the listed claims, returning how many chunks actually came off the map.
+     *
+     * Re-checks each chunk against the live claim map before releasing it, because the list was gathered
+     * before an operator read it and land can change hands in between. Goes through {@code unclaimChunks},
+     * the same call the map GUI uses, so Easy Factions maintains its own per-owner indexes and pushes the
+     * change to every client currently looking at the map.
+     */
+    public static int releaseColonyOverlaps(MinecraftServer server, List<ColonyOverlap> overlaps) {
+        if (!loaded() || server == null || overlaps == null || overlaps.isEmpty()) return 0;
+        ClaimManager cm = ClaimManager.get(server);
+        Map<ResourceKey<Level>, List<Long>> byDim = new HashMap<>();
+        for (ColonyOverlap o : overlaps) {
+            ClaimData live = cm.getClaim(o.dim(), new ChunkPos(o.chunk()));
+            if (live == null || live.type != o.type() || !java.util.Objects.equals(live.owner, o.owner())) continue;
+            byDim.computeIfAbsent(o.dim(), k -> new ArrayList<>()).add(o.chunk());
+        }
+        int released = 0;
+        for (Map.Entry<ResourceKey<Level>, List<Long>> e : byDim.entrySet()) {
+            HashMap<ResourceLocation, List<Long>> rm = new HashMap<>();
+            rm.put(e.getKey().location(), e.getValue());
+            cm.unclaimChunks(rm, server);
+            released += e.getValue().size();
+        }
+        return released;
+    }
+
+    /**
+     * What one owner lost to one colony in a sweep.
+     *
+     * Aggregated per owner rather than per chunk because that is the sentence a player needs to read: four
+     * chunks gone to Ravenhold, not four separate notices about chunks they would have to go and look at a
+     * map to place.
+     */
+    public record OwnerLoss(boolean faction, String owner, String ownerDisplay, String colonyName,
+                            int chunks) {
+        public String refundKey() {
+            return faction ? ClaimRefunds.factionKey(owner) : ClaimRefunds.playerKey(UUID.fromString(owner));
+        }
+    }
+
+    /**
+     * Hand every chunk a colony has grown underneath back to that colony, and pay for what was taken.
+     *
+     * <h2>Why a colony expanding takes the chunk rather than the claim keeping it</h2>
+     * A colony outranks a claim, and that has to hold in both directions or it is not a rule, it is a race:
+     * refusing to claim over a town while letting a claim that got there first stand would simply mean the
+     * faction that claims early keeps the land forever. A town is a thing somebody built; a claim is a
+     * rectangle somebody dragged. So the town wins, including when it grows into ground that was already
+     * spoken for.
+     *
+     * <h2>Why nothing is paid for it</h2>
+     * The claim slot goes back the moment the chunk does, and a slot is what the faction actually bought.
+     * They are not out of pocket: they can put the same claim down on open ground the same minute.
+     *
+     * The claim map is re-checked chunk by chunk before anything is released, because the overlap list is
+     * gathered first and land can change hands while it is being read.
+     */
+    public static List<OwnerLoss> sweepColonyOverlaps(MinecraftServer server) {
+        List<ColonyOverlap> overlaps = colonyOverlaps(server);
+        if (overlaps.isEmpty()) return List.of();
+
+        ClaimManager cm = ClaimManager.get(server);
+
+        Map<ResourceKey<Level>, List<Long>> byDim = new HashMap<>();
+        Map<String, OwnerLoss> perOwner = new LinkedHashMap<>();
+
+        for (ColonyOverlap o : overlaps) {
+            ClaimData live = cm.getClaim(o.dim(), new ChunkPos(o.chunk()));
+            if (live == null || live.type != o.type() || !java.util.Objects.equals(live.owner, o.owner())) continue;
+            boolean faction = o.type() == ClaimType.FACTION;
+            if (!faction && parseUuid(o.owner()) == null) continue;   // a CORE claim with no readable owner
+
+            byDim.computeIfAbsent(o.dim(), k -> new ArrayList<>()).add(o.chunk());
+
+            String key = (faction ? "f:" : "p:") + o.owner();
+            OwnerLoss running = perOwner.get(key);
+            perOwner.put(key, running == null
+                    ? new OwnerLoss(faction, o.owner(), o.ownerDisplay(), o.colonyName(), 1)
+                    : new OwnerLoss(faction, running.owner(), running.ownerDisplay(),
+                            running.colonyName().equals(o.colonyName()) ? running.colonyName() : "",
+                            running.chunks() + 1));
+        }
+
+        for (Map.Entry<ResourceKey<Level>, List<Long>> e : byDim.entrySet()) {
+            HashMap<ResourceLocation, List<Long>> rm = new HashMap<>();
+            rm.put(e.getKey().location(), e.getValue());
+            cm.unclaimChunks(rm, server);
+        }
+        return List.copyOf(perOwner.values());
+    }
+
+    /** The players to tell about a loss: a faction's whole roster, or the one player who held the claim. */
+    public static List<ServerPlayer> onlineOwners(MinecraftServer server, OwnerLoss loss) {
+        List<ServerPlayer> out = new ArrayList<>();
+        if (server == null || loss == null) return out;
+        if (loss.faction()) {
+            Faction f = FactionStateManager.get(server).getFactionByName(loss.owner());
+            if (f == null || f.getMembers() == null) return out;
+            for (UUID member : f.getMembers()) {
+                ServerPlayer sp = server.getPlayerList().getPlayer(member);
+                if (sp != null) out.add(sp);
+            }
+            return out;
+        }
+        UUID owner = parseUuid(loss.owner());
+        ServerPlayer sp = owner == null ? null : server.getPlayerList().getPlayer(owner);
+        if (sp != null) out.add(sp);
+        return out;
+    }
+
+    /** Whether {@code player} is the one who may draw on a pool: its player, or the faction's owner. */
+    public static boolean mayCollect(ServerPlayer player, String refundKey) {
+        if (player == null || refundKey == null) return false;
+        MinecraftServer server = player.getServer();
+        if (server == null) return false;
+        if (!ClaimRefunds.isFactionKey(refundKey)) {
+            return refundKey.equals(ClaimRefunds.playerKey(player.getUUID()));
+        }
+        if (!loaded()) return false;
+        Faction f = FactionStateManager.get(server).getFactionByPlayer(player.getUUID());
+        return f != null && ClaimRefunds.factionKey(f.getName()).equals(refundKey)
+                && FactionStateManager.get(server).playerOwnsFaction(player.getUUID());
+    }
+
+    /** The pools {@code player} may collect right now: their own, and their faction's if they own it. */
+    public static List<String> collectableKeys(ServerPlayer player) {
+        List<String> keys = new ArrayList<>();
+        if (player == null) return keys;
+        keys.add(ClaimRefunds.playerKey(player.getUUID()));
+        MinecraftServer server = player.getServer();
+        if (!loaded() || server == null) return keys;
+        FactionStateManager fsm = FactionStateManager.get(server);
+        Faction f = fsm.getFactionByPlayer(player.getUUID());
+        if (f != null && fsm.playerOwnsFaction(player.getUUID())) keys.add(ClaimRefunds.factionKey(f.getName()));
+        return keys;
+    }
+
+    /**
+     * Whether a claim's owner has any standing in the colonies underneath it.
+     *
+     * A personal claim answers for one player. A faction claim answers for its whole roster: one member of
+     * the town is enough, so a faction that grew out of a colony keeps the border it drew round its own home.
+     * A faction name that no longer resolves is a claim left behind by a disband, which belongs to nobody and
+     * can never be released by its owner, so it is always an overlap.
+     */
+    private static boolean claimBelongsToColonies(MinecraftServer server, ResourceKey<Level> dim,
+                                                  List<Integer> colonies, ClaimData claim) {
+        if (claim.type == ClaimType.CORE) {
+            UUID owner = parseUuid(claim.owner);
+            return owner != null && MineColoniesBridge.trustedInAll(server, dim, colonies, owner);
+        }
+        if (claim.type == ClaimType.FACTION) {
+            Faction f = FactionStateManager.get(server).getFactionByName(claim.owner);
+            if (f == null) return false;
+            for (UUID member : f.getMembers()) {
+                if (MineColoniesBridge.trustedInAll(server, dim, colonies, member)) return true;
+            }
+            return false;
+        }
+        return true;
+    }
+
+    /** A claim owner as a person reads it: the faction name, or the player behind a personal claim. */
+    private static String ownerDisplay(MinecraftServer server, ClaimData claim) {
+        if (claim.type != ClaimType.CORE) return claim.owner;
+        UUID owner = parseUuid(claim.owner);
+        if (owner == null) return claim.owner;
+        return nameOf(server, owner);
+    }
+
+    private static UUID parseUuid(String raw) {
+        try {
+            return raw == null ? null : UUID.fromString(raw);
+        } catch (IllegalArgumentException e) {
+            return null;
         }
     }
 
@@ -1025,6 +1459,27 @@ public final class EasyFactionsBridge {
         out.add("  our restricted list: " + TerritoryConfig.restrictedInteractions()
                 + " overrideEF=" + TerritoryConfig.overrideEasyFactions()
                 + " containers=" + (TerritoryConfig.protectContainers() ? "protected" : "open to all"));
+        if (!MineColoniesBridge.loaded()) {
+            out.add("MineColonies: not installed. Colony priority is inactive.");
+        } else if (MineColoniesBridge.brokenApi()) {
+            out.add("MineColonies: installed, but its claim API FAILED this run. Colony priority is OFF."
+                    + " See the server log for the error.");
+        } else {
+            List<Integer> colonies = MineColoniesBridge.claimingColonies(server, dim, pos);
+            if (colonies.isEmpty()) {
+                out.add("MineColonies: no colony owns this chunk.");
+            } else {
+                int id = colonies.get(0);
+                String town = MineColoniesBridge.colonyName(server, dim, id);
+                boolean trusted = MineColoniesBridge.trustedInAll(server, dim, colonies, player.getUUID());
+                out.add("MineColonies: this chunk belongs to " + (town.isBlank() ? "colony #" + id : town)
+                        + ". You are " + (trusted
+                        ? "one of its people: the claim above cannot shut you out."
+                        : "NOT one of its people: the colony decides here, and this mod will not undo its refusal."));
+                out.add("  colony priority config: respectColonyClaims=" + TerritoryConfig.respectColonyClaims()
+                        + " colonyMembersKeepTheirLand=" + TerritoryConfig.colonyMembersKeepTheirLand());
+            }
+        }
         out.add("Easy Factions live config: faction=" + nameSet(ServerConfig.factionClaimRestrictions)
                 + " core=" + nameSet(ServerConfig.coreClaimRestrictions));
         out.add("  EF claim dimensions: faction=" + ServerConfig.factionClaimDimensions
@@ -1340,17 +1795,21 @@ public final class EasyFactionsBridge {
     }
 
     /**
-     * The "Buy Claims" button: the faction OWNER pays to permanently raise the faction's claim cap by
-     * {@code claimsPerPurchase}.
+     * The "Buy Claims" button: the faction OWNER buys claims, and placing them on the map is then free.
      *
-     * <b>Emeralds are a substitute for an economy mod, never a second currency alongside one.</b> On a server
-     * running SDM Economy the price is {@code costSdm} and emeralds are not accepted at all; emeralds are the
-     * price only where SDM is absent. The old behaviour fell through to emeralds whenever the buyer could not
-     * cover the SDM price, which quietly handed players a second, far cheaper way to pay on exactly the
-     * servers that had configured a real economy — that is what this reads as "emeralds should not be a
-     * purchase option when SDM is active".
+     * <b>This is the only till.</b> A claim used to be charged for twice, once here for the capacity and
+     * again at the map for the chunk, which is exactly the report this answers: money left the buyer's
+     * balance when they put a claim down rather than when they bought it. What is bought is permanent
+     * ceiling, so land released or lost comes back as a slot rather than as a repayment.
      *
-     * Server-authoritative: detects the player's funds and consumes them here, never trusting the client.
+     * The price climbs with how many claims the faction has already bought (see the chunkprice config
+     * block), so a wide border is paid for in rising instalments rather than at one flat rate.
+     *
+     * <b>Emeralds are a substitute for an economy mod, never a second currency alongside one.</b> On a
+     * server running SDM Economy the price is in SDM and emeralds are not accepted at all; emeralds are the
+     * price only where SDM is absent. {@link ClaimEconomy} is what holds that rule.
+     *
+     * Server-authoritative: detects the buyer's funds and consumes them here, never trusting the client.
      * Returns a player-facing message (always non-empty) describing success or why it failed.
      */
     public static String buyClaims(ServerPlayer player) {
@@ -1365,57 +1824,20 @@ public final class EasyFactionsBridge {
         if (f == null) return "You are not in a faction.";
         if (!fsm.playerOwnsFaction(uuid)) return "Only the faction owner can buy claims.";
 
-        long costSdm = TerritoryConfig.costSdm();
-        int costEmeralds = TerritoryConfig.costEmeralds();
         int amount = TerritoryConfig.claimsPerPurchase();
-
-        String paidWith;
-        if (SdmBridge.isLoaded()) {
-            // SDM is the currency. There is no emerald path from here, however poor the buyer is.
-            String key = SdmBridge.resolveKey(player, TerritoryConfig.sdmCurrencyKey());
-            if (key == null) return "No economy currency is set up for you on this server.";
-            if (SdmBridge.balance(player, key) < costSdm) {
-                return "You cannot afford this. It costs " + costSdm + " " + key + ".";
-            }
-            if (!SdmBridge.withdraw(player, key, costSdm)) return "Payment failed - your balance was not changed.";
-            paidWith = costSdm + " " + key;
-        } else {
-            // No economy mod installed, so emeralds stand in for one.
-            if (countEmeralds(player) < costEmeralds) {
-                return "You cannot afford this. It costs " + costEmeralds + " emeralds.";
-            }
-            removeEmeralds(player, costEmeralds);
-            paidWith = costEmeralds + " emeralds";
+        PurchasedClaims purchased = PurchasedClaims.get(server);
+        long price = TerritoryConfig.purchaseRun(purchased.getBonus(f.getName()), amount);
+        if (!ClaimEconomy.charge(player, price)) {
+            return "You cannot afford this. " + amount + " claims cost "
+                    + ClaimEconomy.describe(player, price) + " and you have "
+                    + ClaimEconomy.describe(player, ClaimEconomy.balance(player)) + ".";
         }
 
-        int newBonus = PurchasedClaims.get(server).addBonus(f.getName(), amount);
+        int newBonus = purchased.addBonus(f.getName(), amount);
         int newCap = factionCapFor(server, f);
-        return "Bought " + amount + " claims (paid " + paidWith + "). Faction cap is now " + newCap
-                + " (+" + newBonus + " purchased).";
-    }
-
-    private static int countEmeralds(ServerPlayer player) {
-        int n = 0;
-        var inv = player.getInventory();
-        for (int i = 0; i < inv.getContainerSize(); i++) {
-            ItemStack st = inv.getItem(i);
-            if (st.is(Items.EMERALD)) n += st.getCount();
-        }
-        return n;
-    }
-
-    /** Remove exactly {@code count} emeralds from the player's inventory (caller has verified they have enough). */
-    private static void removeEmeralds(ServerPlayer player, int count) {
-        int remaining = count;
-        var inv = player.getInventory();
-        for (int i = 0; i < inv.getContainerSize() && remaining > 0; i++) {
-            ItemStack st = inv.getItem(i);
-            if (!st.is(Items.EMERALD)) continue;
-            int take = Math.min(remaining, st.getCount());
-            st.shrink(take);
-            remaining -= take;
-        }
-        inv.setChanged();
+        return "Bought " + amount + " claims for " + ClaimEconomy.describe(player, price)
+                + ". Faction cap is now " + newCap + " (+" + newBonus + " purchased)."
+                + " Placing them on the map costs nothing.";
     }
 
     /** Revoke a pending invitation by player name (owner/officer only). */

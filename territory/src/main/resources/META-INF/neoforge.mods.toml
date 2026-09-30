@@ -33,3 +33,12 @@ type = "required"
 versionRange = "[1.0,)"
 ordering = "AFTER"
 side = "BOTH"
+
+# A colony outranks a faction claim. Optional: without MineColonies the rule simply never applies, and the
+# mod behaves as it did before colonies were understood. Loaded AFTER so its claim data is ready to read.
+[[dependencies.territory]]
+modId = "minecolonies"
+type = "optional"
+versionRange = "[1.1,)"
+ordering = "AFTER"
+side = "BOTH"

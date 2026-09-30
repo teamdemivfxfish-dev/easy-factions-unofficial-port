@@ -44,6 +44,17 @@ public final class SdmBridge {
         }
     }
 
+    /** Give {@code amount} to the player. Returns false if it could not be applied. */
+    public static boolean deposit(ServerPlayer player, String key, double amount) {
+        try {
+            CurrencyPlayerData.SERVER.addCurrencyValue(player, key, amount);
+            EconomyAPI.syncCurrencyData(player);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /** Take {@code amount} from the player. Returns false if it could not be applied. */
     public static boolean withdraw(ServerPlayer player, String key, double amount) {
         try {
