@@ -3,10 +3,15 @@ package top.leonx.territory.blocks;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.ItemInteractionResult;
 import net.minecraft.world.MenuProvider;
 import net.minecraft.world.SimpleMenuProvider;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.EntityBlock;
@@ -23,10 +28,11 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import org.jetbrains.annotations.Nullable;
 import top.leonx.territory.TerritoryMod;
 import top.leonx.territory.container.TerritoryTableMenu;
+import top.leonx.territory.integration.Upkeep;
 
 /**
  * The Territory Table. Place it, right-click to open the claim GUI (map + faction tabs). The block is
- * just the body; the claim "brain" is Easy Factions, driven server-side from the menu's buttons. It also
+ * just the body; the claim "brain" is Holdfast Factions, driven server-side from the menu's buttons. It also
  * carries a BlockEntity that drives the cosmetic floating owner-name display.
  *
  * Ported from MineTerritory (GPLv3, by Leon). The original banner-power claim model is removed.
@@ -57,14 +63,56 @@ public class TerritoryTableBlock extends Block implements EntityBlock {
         return SHAPE;
     }
 
+    @Nullable
+    @Override
+    public BlockState getStateForPlacement(BlockPlaceContext context) {
+        if (!context.getLevel().isClientSide && context.getPlayer() instanceof ServerPlayer sp) {
+            String refusal = Upkeep.placementRefusal(sp);
+            if (refusal != null) {
+                sp.displayClientMessage(Component.literal(refusal), true);
+                return null;
+            }
+        }
+        return defaultBlockState();
+    }
+
+    @Override
+    public void setPlacedBy(Level level, BlockPos pos, BlockState state, @Nullable LivingEntity placer,
+                            ItemStack stack) {
+        super.setPlacedBy(level, pos, state, placer, stack);
+        if (!level.isClientSide && placer instanceof ServerPlayer sp) Upkeep.registerCore(sp, level, pos);
+    }
+
+    @Override
+    protected void onRemove(BlockState state, Level level, BlockPos pos, BlockState newState, boolean moving) {
+        if (!state.is(newState.getBlock()) && !level.isClientSide) {
+            if (level.getBlockEntity(pos) instanceof TerritoryTableBlockEntity table) table.dropDeposit(level, pos);
+            Upkeep.forgetCore(level, pos);
+        }
+        super.onRemove(state, level, pos, newState, moving);
+    }
+
+    @Override
+    protected ItemInteractionResult useItemOn(ItemStack stack, BlockState state, Level level, BlockPos pos,
+                                              Player player, InteractionHand hand, BlockHitResult hit) {
+        if (!level.isClientSide && player instanceof ServerPlayer sp) {
+            String result = Upkeep.deposit(sp, level, pos, stack);
+            if (result != null) {
+                sp.displayClientMessage(Component.literal(result), true);
+                return ItemInteractionResult.SUCCESS;
+            }
+        }
+        return ItemInteractionResult.PASS_TO_DEFAULT_BLOCK_INTERACTION;
+    }
+
     @Override
     protected InteractionResult useWithoutItem(BlockState state, Level level, BlockPos pos, Player player,
                                                BlockHitResult hit) {
         if (!level.isClientSide && player instanceof ServerPlayer sp) {
             MenuProvider provider = new SimpleMenuProvider(
                     (id, inv, p) -> new TerritoryTableMenu(id, inv, pos),
-                    Component.translatable("block.territory.territory_table"));
-            sp.openMenu(provider, buf -> buf.writeBlockPos(pos));
+                    Component.translatable("block.holdfast_factions.territory_table"));
+            sp.openMenu(provider, buf -> TerritoryTableMenu.writeOpenData(buf, pos));
         }
         return InteractionResult.SUCCESS;
     }

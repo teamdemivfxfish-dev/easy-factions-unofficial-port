@@ -18,39 +18,57 @@ repositories {
     mavenCentral()
 }
 
+configurations {
+    renamer
+}
+
+sourceSets {
+    corePatch {
+        java.srcDir '../core/patches'
+    }
+    tools {
+        java.srcDir 'tools'
+    }
+}
+
+def releasedCore = file('libs/core-released.jar')
+def renamedCore = layout.buildDirectory.file('renamed/core.jar').get().asFile
+
+dependencies {
+    renamer 'org.ow2.asm:asm-commons:9.8'
+}
+
+sourceSets.tools.compileClasspath = configurations.renamer
+
+def renameCore = tasks.register('renameCore', JavaExec) {
+    group = 'build'
+    description = 'Renames the released core (package, mod id, strings, resources) into build/renamed/core.jar.'
+    dependsOn 'toolsClasses'
+    classpath = sourceSets.tools.output + configurations.renamer
+    javaLauncher = javaToolchains.launcherFor(java.toolchain)
+    mainClass = 'RenameCore'
+    args releasedCore.absolutePath, renamedCore.absolutePath
+    inputs.file releasedCore
+    inputs.files sourceSets.tools.output
+    outputs.file renamedCore
+}
+
+dependencies {
+    compileOnly files(renamedCore) {
+        builtBy renameCore
+    }
+}
+
 neoForge {
     version = neoforge_version
     mods {
-        territory {
+        holdfast_factions {
             sourceSet sourceSets.main
-        }
-    }
-    // Headless boot verification: ./gradlew runServer --offline
-    // run/mods must hold the Easy Factions jar with the territory trees STRIPPED OUT (this run supplies
-    // territory from the source set, and two copies of one modid is a hard crash at mod discovery), plus
-    // MineColonies with structurize + blockui + domum_ornamentum if colony behaviour is being checked.
-    // What this proves is that every class loads and the startup reports say what they should; in-world
-    // behaviour still needs real players.
-    runs {
-        server {
-            server()
-            programArguments.addAll '--nogui'
         }
     }
 }
 
-dependencies {
-    // Easy Factions provides the claim + faction API at runtime; compileOnly because it is a SEPARATE
-    // jar (this mod is GPLv3 and is NOT bundled into the MPL Easy Factions jar). Players install both.
-    compileOnly files('libs/easy_factions-NeoForge-1.0.0.jar')
-    // SDM Economy is the default currency for the "Buy Claims" button (optional soft-dep). compileOnly:
-    // never bundled, only touched after ModList.isLoaded("sdmeconomy"); absent -> emerald fallback.
-    compileOnly files('libs/sdmeconomy-neoforge-1.21.1-2.4.0.jar')
-    // MineColonies outranks every faction claim: a colony's own chunks answer to the colony, not to whoever
-    // painted a claim over them. compileOnly + guarded by ModList.isLoaded("minecolonies"), so a server
-    // without it simply never reaches the code. Never bundled.
-    compileOnly files('libs/minecolonies-1.1.1357-1.21.1-snapshot.jar')
-}
+sourceSets.corePatch.compileClasspath = sourceSets.main.compileClasspath + sourceSets.main.output
 
 tasks.named('processResources', ProcessResources).configure {
     var props = [
@@ -65,4 +83,35 @@ tasks.named('processResources', ProcessResources).configure {
     filesMatching(['META-INF/neoforge.mods.toml']) {
         expand props
     }
+}
+
+tasks.named('jar') {
+    enabled = false
+}
+
+tasks.register('mergedJar', Jar) {
+    group = 'build'
+    description = 'The single Holdfast Factions jar: the renamed core, its patched classes and the Territory Table.'
+    dependsOn 'classes', 'corePatchClasses', renameCore
+    archiveBaseName = 'holdfast_factions-neoforge'
+    archiveVersion = mod_version
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    from(sourceSets.corePatch.output)
+    from(sourceSets.main.output) {
+        exclude 'pack.mcmeta'
+    }
+    from(zipTree(renamedCore)) {
+        exclude 'data/minecraft/tags/block/mineable/pickaxe.json'
+        exclude 'assets/holdfast_factions/lang/en_us.json'
+        exclude 'dev/xmat5/holdfast/server/claims/ChunkClaimSelectionManager*.class'
+        exclude 'dev/xmat5/holdfast/server/claims/ClaimCommands*.class'
+        exclude 'dev/xmat5/holdfast/server/event_handlers/ClaimEventHandler*.class'
+        exclude 'dev/xmat5/holdfast/server/ServerConfig*.class'
+        exclude 'dev/xmat5/holdfast/objective/ObjectiveConfig*.class'
+        exclude 'dev/xmat5/holdfast/client/ClientConfig*.class'
+    }
+}
+
+tasks.named('assemble') {
+    dependsOn 'mergedJar'
 }

@@ -1,7 +1,6 @@
 modLoader = "javafml"
 loaderVersion = "[4,)"
-license = "GPL-3.0-only"
-issueTrackerURL = "https://github.com/leon-o/MineTerritory/issues"
+license = "MPL-2.0 (faction core) and GPL-3.0-only (Territory Table)"
 
 [[mods]]
 modId = "${mod_id}"
@@ -10,35 +9,39 @@ displayName = "${mod_name}"
 authors = "${mod_authors}"
 description = '''${mod_description}'''
 displayURL = "https://github.com/leon-o/MineTerritory"
+displayTest = "IGNORE_ALL_VERSION"
 
-# NeoForge + Minecraft
-[[dependencies.territory]]
+[[dependencies.holdfast_factions]]
 modId = "neoforge"
 type = "required"
 versionRange = "[21.1.0,)"
 ordering = "NONE"
 side = "BOTH"
 
-[[dependencies.territory]]
+[[dependencies.holdfast_factions]]
 modId = "minecraft"
 type = "required"
 versionRange = "${minecraft_version_range}"
 ordering = "NONE"
 side = "BOTH"
 
-# Easy Factions backs every claim: this mod drives its ClaimManager instead of MineTerritory's banner power.
-[[dependencies.territory]]
-modId = "easy_factions"
-type = "required"
-versionRange = "[1.0,)"
+[[dependencies.holdfast_factions]]
+modId = "numismatics"
+type = "optional"
+versionRange = "*"
 ordering = "AFTER"
 side = "BOTH"
 
-# A colony outranks a faction claim. Optional: without MineColonies the rule simply never applies, and the
-# mod behaves as it did before colonies were understood. Loaded AFTER so its claim data is ready to read.
-[[dependencies.territory]]
-modId = "minecolonies"
+[[dependencies.holdfast_factions]]
+modId = "jakesworldguard"
 type = "optional"
-versionRange = "[1.1,)"
+versionRange = "*"
+ordering = "AFTER"
+side = "BOTH"
+
+[[dependencies.holdfast_factions]]
+modId = "minecolonytax"
+type = "optional"
+versionRange = "*"
 ordering = "AFTER"
 side = "BOTH"

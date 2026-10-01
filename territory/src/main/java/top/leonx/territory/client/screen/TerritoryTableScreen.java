@@ -1,21 +1,24 @@
 package top.leonx.territory.client.screen;
 
 import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.ChatFormatting;
 import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.renderer.texture.DynamicTexture;
-import net.minecraft.Util;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
 import net.neoforged.neoforge.network.PacketDistributor;
 import top.leonx.territory.client.MinimapSampler;
 import top.leonx.territory.container.TerritoryTableMenu;
-import top.leonx.territory.integration.EasyFactionsBridge;
+import top.leonx.territory.integration.FactionsBridge;
 import top.leonx.territory.network.AdminActionC2S;
 import top.leonx.territory.network.FactionActionC2S;
 import top.leonx.territory.network.FactionInfoRequestC2S;
@@ -30,6 +33,7 @@ import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -47,11 +51,12 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     public static final int TAB_FACTION = 1;
     /** Permissions for admin territories. Only ever shown to operators. */
     public static final int TAB_PERMS = 2;
+    public static final int TAB_VAULT = 3;
 
-    private static final int T_PERSONAL = EasyFactionsBridge.TYPE_PERSONAL;
-    private static final int T_FACTION = EasyFactionsBridge.TYPE_FACTION;
-    private static final int T_ADMIN = EasyFactionsBridge.TYPE_ADMIN;
-    private static final int T_CHILD = EasyFactionsBridge.TYPE_CHILD;
+    private static final int T_PERSONAL = FactionsBridge.TYPE_PERSONAL;
+    private static final int T_FACTION = FactionsBridge.TYPE_FACTION;
+    private static final int T_ADMIN = FactionsBridge.TYPE_ADMIN;
+    private static final int T_WARZONE = FactionsBridge.TYPE_WARZONE;
 
     private static final int PANEL_BG = 0xF0140F0A;
     private static final int OUTLINE_DARK = 0xFF120D08;
@@ -66,33 +71,15 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     public static int savedFloatSpan = 16;
 
     private static final int[] PRESET_COLORS = {
-            0xE6C87A, 0xCC5555, 0x55CC55, 0x5577CC, 0xC056C0, 0x44C2C2, 0xD2812B, 0xECECEC
+            0xE6C87A, 0xF2E34A, 0x2FAE6B, 0x5577CC, 0xC056C0, 0x44C2C2, 0xD2812B,
+            0xECECEC, 0xE87FB5, 0xFF3A3A, 0x5CC8FF, 0x8A5CE6, 0x8B5A2B, 0x8C8C8C
     };
+    private static final int SWATCH_COLS = 7;
 
     private static final int A_FILL = 0x88000000;
+    private static final int A_WARZONE = 0xC0000000;
     private static final int A_ADD = 0xAA40C040;
     private static final int A_REMOVE = 0x99CC4040;
-    /** Parent land while a plot is being drawn inside it: still visible, clearly not what you are editing. */
-    private static final int A_GREYED = 0x55000000;
-    /** A child plot drawn over its parent, in the plot's own colour. */
-    private static final int A_CHILD = 0x77000000;
-
-    /**
-     * MineColonies land: a wash of colour under the claims and a solid line around the town's edge.
-     *
-     * Deliberately one fixed colour for every colony rather than anything a player picks, because it is not
-     * a claim and must not read as one. It is the ground a faction cannot take, drawn from MineColonies'
-     * own chunk data, and a border round the outside is the only way to see where a town actually ends.
-     */
-    private static final int A_COLONY = 0x442FD8C0;
-    private static final int A_COLONY_MINE = 0x662FD8C0;
-    private static final int COLONY_BORDER = 0xFF2FD8C0;
-
-    /** Half-brightness version of a colour, for land that is greyed out rather than hidden. */
-    private static int dim(int rgb) {
-        int r = ((rgb >> 16) & 0xFF) / 2, gr = ((rgb >> 8) & 0xFF) / 2, b = (rgb & 0xFF) / 2;
-        return (r << 16) | (gr << 8) | b;
-    }
 
     private int tab = TAB_MAP;
 
@@ -106,26 +93,12 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private final Set<Long> stagedAdd = new HashSet<>();
     private final Set<Long> stagedRemove = new HashSet<>();
     private final List<Cluster> clusters = new ArrayList<>();
-    /** Colony land in view: chunk -> index into the colony name list. Rebuilt with every server refresh. */
-    private final Map<Long, Integer> colonyAt = new HashMap<>();
-    /** Colony chunks this player may not claim, kept apart from {@code forbidden} so it can be explained. */
-    private final Set<Long> colonyBlocked = new HashSet<>();
-    /** Colony chunks belonging to a town this player is part of, drawn brighter and still claimable. */
-    private final Set<Long> colonyMine = new HashSet<>();
-    private final List<Cluster> colonyClusters = new ArrayList<>();
     private TerritoryDataS2C data;
     private boolean initialized = false;
     private String lastTypedName = null;
-    /** Admin territory name typed but not yet committed, kept across the server's data refreshes. */
+    /** Safezone name typed but not yet committed, kept across the server's data refreshes. */
     private String lastTypedAdminName = null;
-    /** Child plot name typed but not yet committed. Names the plot being drawn or edited. */
-    private String lastTypedChildName = null;
-    /**
-     * Border colour for the NEXT admin territory painted. Unlike personal/faction colours (which recolour
-     * everything that owner holds the moment a swatch is clicked) this is staged and applied only to the
-     * chunks committed with it, so separate admin regions can each keep their own colour.
-     */
-    private int adminColor = EasyFactionsBridge.ADMIN_COLOR;
+    private String lastTypedWarzoneName = null;
 
     // view + buffer
     private int zoom = 2;
@@ -135,11 +108,10 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private DynamicTexture mapTex;
     private ResourceLocation mapTexId;
 
-    // drag + brush (hold to arm, then drag to paint claims / relinquish)
-    private static final long BRUSH_ARM_MS = 750L;
+    // drag + brush: plain drag always pans immediately; holding Shift when the drag starts paints
+    // claims/relinquishes instead. Decided once, at press time - no arm delay, no ambiguity.
     private boolean dragging, panned, painting, paintErase;
     private double dragStartMouseX, dragStartMouseY, dragStartViewX, dragStartViewZ;
-    private long pressStartMillis;
     private int pressChunkX, pressChunkZ;
 
     private EditBox nameField;
@@ -151,6 +123,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private int permListX, permListY, permListW, permListH, permDetX, permDetW;
     private int permListScroll, permDetScroll;
     private String selectedZone = "";
+    private int permsPage = 0;
     private EditBox memberField;
     /** Row hitboxes rebuilt every frame, so a click always tests exactly what the player can see. */
     private final List<Hit> permHits = new ArrayList<>();
@@ -165,6 +138,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     // faction tab
     private static final String[] REL_STATUS = {"FRIENDLY", "NEUTRAL", "HOSTILE"};
     private FactionInfoS2C factionInfo;
+    private Button depositButton;
     private int factionSubTab = 0;   // 0 Members, 1 Invites, 2 Relations, 3 Options
     private boolean pendingLeave, pendingDisband;   // two-click "are you sure?" guards
     private EditBox factionArg;
@@ -181,11 +155,15 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     @Override
     protected void init() {
-        int avail = Math.min(this.width - 40, this.height - 40);
         this.ctrlW = 154;
-        this.mapPx = Math.max(176, Math.min(avail - ctrlW - 30, 432));
         this.mapXoff = 8;
         this.mapYoff = 48;
+        // Each axis limits the map on its own: width has to fit map + controls side by side, height only
+        // the map itself. (Both used to share one "smaller of the two" figure minus the controls' width,
+        // which shrank the map to its minimum on any window where height was the tighter side.)
+        int byWidth = this.width - 40 - ctrlW - 30;
+        int byHeight = this.height - 20 - mapYoff - 8;
+        this.mapPx = Math.max(176, Math.min(Math.min(byWidth, byHeight), 560));
         this.ctrlXoff = mapXoff + mapPx + 10;
         // floor the panel width so the (full-width) Faction tab always has room for its rows + buttons
         this.imageWidth = Math.max(ctrlXoff + ctrlW + 8, 384);
@@ -203,9 +181,9 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     private boolean faction() { return claimType == T_FACTION; }
     private boolean admin() { return claimType == T_ADMIN; }
-    private boolean child() { return claimType == T_CHILD; }
+    private boolean warzone() { return claimType == T_WARZONE; }
     /** Admin-side modes share the "no cap, no contiguity" rules and the staged colour. */
-    private boolean adminSide() { return admin() || child(); }
+    private boolean adminSide() { return admin() || warzone(); }
 
     // ---- server data ----------------------------------------------------------------------------
 
@@ -214,13 +192,13 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         if (tab == TAB_MAP && nameField != null) {
             if (claimType == T_PERSONAL) lastTypedName = nameField.getValue();
             else if (claimType == T_ADMIN) lastTypedAdminName = nameField.getValue();
-            else if (claimType == T_CHILD) lastTypedChildName = nameField.getValue();
+            else if (claimType == T_WARZONE) lastTypedWarzoneName = nameField.getValue();
         }
         this.data = msg;
         // if a type is selected the player is no longer eligible for, fall back to something they can use
         if (adminSide() && !msg.canAdminClaim()) claimType = firstAllowedType(msg);
         if (claimType == T_PERSONAL && !msg.canPersonalClaim()) claimType = firstAllowedType(msg);
-        if (tab == TAB_PERMS && !msg.canAdminClaim()) tab = TAB_MAP;
+        if (tab == TAB_PERMS && !msg.canAdminClaim() && !msg.canFactionClaim()) tab = TAB_MAP;
         if (selectedZone.isEmpty() && !msg.adminZones().isEmpty()) selectedZone = msg.adminZones().get(0).name();
         recomputeSets();
         relayout();
@@ -237,139 +215,16 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         forbidden.clear();
         clusters.clear();
         if (data == null) return;
-        recomputeColonies();
-        if (child()) {
-            recomputeChildSets();
-            computeClusters();
-            return;
-        }
-        int mineKind = admin() ? EasyFactionsBridge.KIND_ADMIN
-                : (faction() ? EasyFactionsBridge.KIND_MINE_FACTION : EasyFactionsBridge.KIND_MINE_CORE);
+        int mineKind = admin() || warzone() ? FactionsBridge.KIND_ADMIN
+                : (faction() ? FactionsBridge.KIND_MINE_FACTION : FactionsBridge.KIND_MINE_CORE);
         for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
             long key = ChunkPos.asLong(e.x(), e.z());
             if (e.kind() == mineKind) mineSet.add(key);
             else forbidden.add(key);
         }
-        // A colony is not a claim, so it is not in the list above, and the server will refuse a selection
-        // that touches one. Refusing it here as well is what stops the player painting a swath across a
-        // town and having the whole commit rejected for a chunk they could not see.
-        if (!adminSide()) forbidden.addAll(colonyBlocked);
         stagedAdd.removeIf(k -> mineSet.contains(k) || forbidden.contains(k));
         stagedRemove.removeIf(k -> !mineSet.contains(k));
         computeClusters();
-    }
-
-    /**
-     * The colonies under the current view: where they are, which of them this player belongs to, and where
-     * to write their names.
-     *
-     * A colony the player is part of is drawn but not blocked, matching the server: fencing your OWN town
-     * inside your faction's border is the reasonable thing to want, and it is only somebody else's town
-     * that this protects.
-     */
-    private void recomputeColonies() {
-        colonyAt.clear();
-        colonyBlocked.clear();
-        colonyMine.clear();
-        colonyClusters.clear();
-        if (data == null || data.colonies().isEmpty()) return;
-        for (TerritoryDataS2C.ColonyCell c : data.colonies()) {
-            long key = ChunkPos.asLong(c.x(), c.z());
-            colonyAt.put(key, c.nameIdx());
-            if (c.trusted()) colonyMine.add(key);
-            else if (data.colonyBlocksClaims()) colonyBlocked.add(key);
-        }
-        computeColonyClusters();
-    }
-
-    /** One label per contiguous run of one colony's chunks, placed at its centre, as claims are labelled. */
-    private void computeColonyClusters() {
-        Set<Long> seen = new HashSet<>();
-        for (Map.Entry<Long, Integer> start : colonyAt.entrySet()) {
-            if (!seen.add(start.getKey())) continue;
-            int colony = start.getValue();
-            ArrayDeque<Long> q = new ArrayDeque<>();
-            q.add(start.getKey());
-            double sumX = 0, sumZ = 0;
-            int count = 0;
-            while (!q.isEmpty()) {
-                long c = q.poll();
-                int cx = ChunkPos.getX(c), cz = ChunkPos.getZ(c);
-                sumX += cx;
-                sumZ += cz;
-                count++;
-                for (long n : new long[]{ChunkPos.asLong(cx + 1, cz), ChunkPos.asLong(cx - 1, cz),
-                        ChunkPos.asLong(cx, cz + 1), ChunkPos.asLong(cx, cz - 1)}) {
-                    Integer other = colonyAt.get(n);
-                    if (other != null && other == colony && seen.add(n)) q.add(n);
-                }
-            }
-            colonyClusters.add(new Cluster(sumX / count + 0.5, sumZ / count + 0.5, colonyName(colony)));
-        }
-    }
-
-    private String colonyName(int idx) {
-        if (data == null || idx < 0 || idx >= data.colonyNames().size()) return "";
-        return data.colonyNames().get(idx);
-    }
-
-    /**
-     * Child mode: what counts as "mine" is the plot currently being named, and everything that is not free
-     * ground inside its parent is off limits.
-     *
-     * A plot lives inside exactly one parent. The parent is the one this plot already occupies, or — for a
-     * plot being drawn for the first time — the one under the chunk painted first. Every chunk of any other
-     * territory is forbidden, which is what makes "a child can only be inside its parent" something the
-     * player can see rather than an error message after the fact.
-     */
-    private void recomputeChildSets() {
-        String plot = currentChildName();
-        String parent = childParentLabel(plot);
-
-        for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
-            long key = ChunkPos.asLong(e.x(), e.z());
-            String childName = label(e.childIdx());
-            if (!plot.isEmpty() && childName.equals(plot)) {
-                mineSet.add(key);
-                continue;
-            }
-            boolean freeGroundInParent = e.kind() == EasyFactionsBridge.KIND_ADMIN
-                    && childName.isEmpty()
-                    && (parent.isEmpty() || label(e.ownerIdx()).equals(parent));
-            if (!freeGroundInParent) forbidden.add(key);
-        }
-        // chunks with no claim at all are not in the list, and painting one is meaningless in child mode
-        stagedAdd.removeIf(k -> mineSet.contains(k) || forbidden.contains(k) || !claimed(k));
-        stagedRemove.removeIf(k -> !mineSet.contains(k));
-    }
-
-    private boolean claimed(long key) {
-        for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
-            if (ChunkPos.asLong(e.x(), e.z()) == key) return true;
-        }
-        return false;
-    }
-
-    private String label(int idx) {
-        return idx >= 0 && idx < data.owners().size() ? data.owners().get(idx) : "";
-    }
-
-    private String currentChildName() {
-        if (nameField != null && child()) return nameField.getValue().strip();
-        return lastTypedChildName != null ? lastTypedChildName.strip() : "";
-    }
-
-    /** The parent territory a plot belongs to: where it already sits, else where its first staged chunk is. */
-    private String childParentLabel(String plot) {
-        for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
-            if (!plot.isEmpty() && label(e.childIdx()).equals(plot)) return label(e.ownerIdx());
-        }
-        for (long staged : stagedAdd) {
-            for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
-                if (ChunkPos.asLong(e.x(), e.z()) == staged) return label(e.ownerIdx());
-            }
-        }
-        return "";
     }
 
     private void computeClusters() {
@@ -412,14 +267,202 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
                 .bounds(x + 6, y + 28, 74, 16).build());
         addRenderableWidget(Button.builder(Component.translatable("gui.territory.tab.faction"), b -> selectTab(TAB_FACTION))
                 .bounds(x + 84, y + 28, 74, 16).build());
-        // the permissions tab exists only for operators, and only once there is something to administer
-        if (data != null && data.canAdminClaim()) {
+        addRenderableWidget(Button.builder(Component.translatable("gui.territory.tab.vault"), b -> selectTab(TAB_VAULT))
+                .bounds(x + 162, y + 28, 74, 16).build());
+        // the permissions tab is for operators (safezones) and faction owners and officers (faction access)
+        if (canSafezones() || canFactionAccess()) {
             addRenderableWidget(Button.builder(Component.translatable("gui.territory.tab.perms"), b -> selectTab(TAB_PERMS))
-                    .bounds(x + 162, y + 28, 74, 16).build());
+                    .bounds(x + 240, y + 28, 74, 16).build());
         }
+        menu.setVaultOpen(tab == TAB_VAULT);
+        depositButton = null;
         if (tab == TAB_MAP) buildMapWidgets(x, y);
         else if (tab == TAB_PERMS) buildPermWidgets(x, y);
+        else if (tab == TAB_VAULT) buildVaultWidgets(x, y);
         else buildFactionWidgets(x, y);
+    }
+
+    private void buildVaultWidgets(int x, int y) {
+        int w = Math.min(150, imageWidth - 200);
+        depositButton = Button.builder(Component.translatable("gui.territory.vault.deposit"),
+                        b -> sendFactionAction(FactionActionC2S.DEPOSIT, "", ""))
+                .bounds(x + 190, y + TerritoryTableMenu.HOTBAR_Y - 2, w, 18).build();
+        addRenderableWidget(depositButton);
+    }
+
+    private static String duration(long minutes) {
+        if (minutes <= 0L) return "under 1m";
+        if (minutes >= 1440L) return (minutes / 1440L) + "d " + ((minutes % 1440L) / 60L) + "h";
+        if (minutes >= 60L) return (minutes / 60L) + "h " + (minutes % 60L) + "m";
+        return minutes + "m";
+    }
+
+    private int drawWrapped(GuiGraphics g, String text, int x, int y, int width, int color) {
+        for (net.minecraft.util.FormattedCharSequence line : font.split(Component.literal(text), width)) {
+            g.drawString(font, line, x, y, color, false);
+            y += 10;
+        }
+        return y + 3;
+    }
+
+    private void renderVaultPage(GuiGraphics g) {
+        int x = leftPos, y = topPos;
+        g.drawString(font, Component.translatable("gui.territory.vault.slots"), x + 10, y + 64, TITLE_GOLD, false);
+        g.drawString(font, Component.translatable("gui.territory.vault.inventory"), x + 10, y + 106, TEXT_DIM, false);
+        int tx = x + 190, tw = imageWidth - 200, ty = y + 54;
+        FactionInfoS2C fi = factionInfo;
+        int slotValue = menu.inputValue();
+        if (fi == null) {
+            drawWrapped(g, "Syncing...", tx, ty, tw, TEXT_DIM);
+            if (depositButton != null) depositButton.active = false;
+            return;
+        }
+        if (!fi.inFaction()) {
+            drawWrapped(g, "Join a faction to fund its land.", tx, ty, tw, TEXT_DIM);
+            if (depositButton != null) depositButton.active = false;
+            return;
+        }
+        FactionInfoS2C.Extras bank = fi.extras();
+        boolean mayDeposit = switch (bank.deposit()) {
+            case 1 -> fi.isOwner() || fi.isOfficer();
+            case 2 -> fi.isOwner();
+            default -> true;
+        };
+        if (depositButton != null) depositButton.active = slotValue > 0 && mayDeposit;
+
+        int due = fi.dueValue(), held = fi.coreValue();
+        int chunks = fi.factionUsed();
+        String basis = chunks == 0 ? " for 1 chunk" : "";
+        if (!fi.hasCore()) {
+            ty = drawWrapped(g, "No core yet. Depositing here makes this table your faction's core.", tx, ty, tw, TEXT_DIM);
+        } else if (fi.corePos() == menu.pos.asLong()) {
+            ty = drawWrapped(g, "This table is your faction's core.", tx, ty, tw, 0xFF8FAE72);
+        } else {
+            net.minecraft.core.BlockPos core = net.minecraft.core.BlockPos.of(fi.corePos());
+            ty = drawWrapped(g, "Your core is at " + core.getX() + ", " + core.getY() + ", " + core.getZ()
+                    + ". Items only go into that table.", tx, ty, tw, 0xFFCC6666);
+        }
+        if (!mayDeposit) {
+            ty = drawWrapped(g, bank.deposit() == 2 ? "Only the owner can add to the faction bank." : "Only officers and the owner can add to the faction bank.",
+                    tx, ty, tw, 0xFFCC6666);
+        }
+        if (menu.costPerChunk <= 0) {
+            drawWrapped(g, "Upkeep is switched off on this server.", tx, ty, tw, TEXT_DIM);
+            return;
+        }
+        if (chunks == 0) {
+            ty = drawWrapped(g, "Nothing is claimed yet, so no upkeep is due. Times are shown for 1 chunk.", tx, ty, tw, TEXT_DIM);
+        }
+        ty = drawWrapped(g, held > 0 ? "The core covers " + duration(minutesFor(held, chunks)) + basis + "." : "The core is empty.",
+                tx, ty, tw, 0xFFFFFFFF);
+        if (!bank.top().isEmpty()) {
+            StringBuilder top = new StringBuilder("Top: ");
+            for (int i = 0; i < Math.min(3, bank.top().size()); i++) {
+                FactionInfoS2C.Contribution c = bank.top().get(i);
+                top.append(i > 0 ? ", " : "").append(c.name()).append(' ').append(duration(minutesFor(c.value(), chunks)));
+            }
+            ty = drawWrapped(g, top.toString(), tx, ty, tw, TEXT_DIM);
+        }
+        if (bank.mine() > 0L) {
+            ty = drawWrapped(g, "You added " + duration(minutesFor(bank.mine(), chunks)) + " in total.", tx, ty, tw, 0xFF8FAE72);
+        }
+
+        int reserve = fi.graceMinutesLeft() >= 0 ? 36 : (due > 0 ? 14 : 0);
+        int extra = slotValue > 0 ? 26 : 0;
+        int limit = y + TerritoryTableMenu.HOTBAR_Y - 4 - reserve - extra;
+        ty = drawItemTimes(g, tx, ty + 2, tw, limit, chunks, slotValue > 0);
+        if (slotValue > 0) {
+            ty = drawWrapped(g, "Adds " + duration(minutesFor(slotValue, chunks)) + basis + ", covered for "
+                    + duration(minutesFor((long) held + slotValue, chunks)) + " in total.", tx, ty + 2, tw, 0xFF8FAE72);
+        }
+        if (fi.graceMinutesLeft() >= 0) {
+            long need = (long) due - held - slotValue;
+            String fix = need > 0 ? "Deposit items worth " + duration(minutesFor(need, chunks)) + " more to pay in full."
+                    : "These items pay it in full.";
+            drawWrapped(g, "Payment overdue. The land is safe for " + duration(fi.graceMinutesLeft()) + ". " + fix,
+                    tx, ty + 4, tw, 0xFFCC6666);
+        } else if (due > 0) {
+            drawWrapped(g, "Next payment in " + duration(fi.minutesToNext()) + ".", tx, ty + 4, tw, TEXT_DIM);
+        }
+    }
+
+    private long minutesFor(long value, int chunks) {
+        FactionInfoS2C fi = factionInfo;
+        if (fi == null || menu.costPerChunk <= 0) return 0L;
+        return value * fi.intervalMinutes() / ((long) Math.max(1, chunks) * menu.costPerChunk);
+    }
+
+    private static String itemLabel(String id) {
+        ResourceLocation rl = ResourceLocation.tryParse(id);
+        Item item = rl == null ? null : BuiltInRegistries.ITEM.getOptional(rl).orElse(null);
+        return item == null ? id : new ItemStack(item).getHoverName().getString();
+    }
+
+    /** What each item is worth as upkeep time: the stacks in the deposit slots when there are any, otherwise every item the core accepts. */
+    private int drawItemTimes(GuiGraphics g, int tx, int ty, int tw, int limit, int chunks, boolean slots) {
+        Map<String, Long> worth = new LinkedHashMap<>();
+        if (slots) {
+            Map<String, Integer> counts = new LinkedHashMap<>();
+            for (int i = 0; i < TerritoryTableMenu.INPUT_SLOTS; i++) {
+                ItemStack stack = menu.inputContainer().getItem(i);
+                if (stack.isEmpty()) continue;
+                String id = BuiltInRegistries.ITEM.getKey(stack.getItem()).toString();
+                if (menu.coinValues.containsKey(id)) counts.merge(id, stack.getCount(), Integer::sum);
+            }
+            counts.forEach((id, count) -> worth.put(id, (long) count * menu.coinValues.get(id)));
+        } else {
+            List<Map.Entry<String, Integer>> sorted = new ArrayList<>(menu.coinValues.entrySet());
+            sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+            for (Map.Entry<String, Integer> e : sorted) worth.put(e.getKey(), (long) e.getValue());
+        }
+        if (worth.isEmpty()) return ty;
+
+        g.drawString(font, slots ? "In the slots:" : "Each item adds:", tx, ty, TITLE_GOLD, false);
+        ty += 11;
+        int maxRows = Math.max(0, (limit - ty) / 10);
+        int rows = worth.size();
+        int shown = rows > maxRows ? Math.max(0, maxRows - 1) : rows;
+        int drawn = 0;
+        for (Map.Entry<String, Long> e : worth.entrySet()) {
+            if (drawn >= shown) break;
+            String count = slots ? menu.coinValues.get(e.getKey()) > 0 ? countIn(e.getKey()) + " x " : "" : "";
+            String line = count + itemLabel(e.getKey()) + ": " + duration(minutesFor(e.getValue(), chunks));
+            g.enableScissor(tx, ty, tx + tw, ty + 10);
+            g.drawString(font, line, tx + 4, ty, 0xFFFFFFFF, false);
+            g.disableScissor();
+            ty += 10;
+            drawn++;
+        }
+        if (drawn < rows && maxRows > 0) {
+            g.drawString(font, "+" + (rows - drawn) + " more, hover an item to see its time", tx + 4, ty, TEXT_DIM, false);
+            ty += 10;
+        }
+        return ty;
+    }
+
+    private int countIn(String id) {
+        int n = 0;
+        for (int i = 0; i < TerritoryTableMenu.INPUT_SLOTS; i++) {
+            ItemStack stack = menu.inputContainer().getItem(i);
+            if (!stack.isEmpty() && BuiltInRegistries.ITEM.getKey(stack.getItem()).toString().equals(id)) n += stack.getCount();
+        }
+        return n;
+    }
+
+    @Override
+    protected List<Component> getTooltipFromContainerItem(ItemStack stack) {
+        List<Component> lines = super.getTooltipFromContainerItem(stack);
+        FactionInfoS2C fi = factionInfo;
+        if (tab != TAB_VAULT || stack.isEmpty() || fi == null || !fi.inFaction() || menu.costPerChunk <= 0) return lines;
+        Integer value = menu.coinValues.get(BuiltInRegistries.ITEM.getKey(stack.getItem()).toString());
+        if (value == null) return lines;
+        int chunks = fi.factionUsed();
+        String basis = chunks == 0 ? " for 1 chunk" : "";
+        String text = "Upkeep: " + duration(minutesFor(value, chunks)) + " each" + basis;
+        if (stack.getCount() > 1) text += ", " + duration(minutesFor((long) value * stack.getCount(), chunks)) + " for the stack";
+        List<Component> out = new ArrayList<>(lines);
+        out.add(Component.literal(text).withStyle(ChatFormatting.GOLD));
+        return out;
     }
 
     /**
@@ -427,11 +470,87 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
      * pane. Only the "add a player" row is a real widget, and it sits in a reserved slot at the bottom of
      * the details pane where it cannot be scrolled away from or overlapped.
      */
+    private boolean canFactionAccess() { return data != null && data.canFactionClaim(); }
+
+    private boolean canSafezones() { return data != null && data.canAdminClaim(); }
+
+    private boolean onAccessPage() { return canFactionAccess() && (!canSafezones() || permsPage == 0); }
+
+    private static final int ACCESS_ROW_H = 40;
+
+    private void buildAccessWidgets(int x, int y) {
+        FactionInfoS2C fi = factionInfo;
+        if (canFactionAccess() && canSafezones()) {
+            addRenderableWidget(Button.builder(Component.translatable("gui.territory.access.to_zones"), b -> { permsPage = 1; relayout(); })
+                    .bounds(x + imageWidth - 124, y + 45, 114, 12).build());
+        }
+        if (fi == null || !fi.inFaction()) return;
+        String[] keys = {"doors", "utility", "deposit"};
+        int[] levels = {fi.extras().doors(), fi.extras().utility(), fi.extras().deposit()};
+        String[] prefix = {"gui.territory.access.level.", "gui.territory.access.level.", "gui.territory.access.dep."};
+        String[][] names = {{"members", "allies", "everyone"}, {"members", "allies", "everyone"}, {"members", "officers", "owner"}};
+        for (int i = 0; i < keys.length; i++) {
+            final String key = keys[i];
+            final int next = (levels[i] + 1) % 3;
+            Component label = Component.translatable(prefix[i] + names[i][Math.max(0, Math.min(2, levels[i]))]);
+            addRenderableWidget(Button.builder(label,
+                            b -> PacketDistributor.sendToServer(new FactionActionC2S(menu.pos, FactionActionC2S.SET_SETTING, key, String.valueOf(next))))
+                    .bounds(x + imageWidth - 148, y + 66 + i * ACCESS_ROW_H, 138, 18).build());
+        }
+    }
+
+    private void renderAccessPage(GuiGraphics g) {
+        FactionInfoS2C fi = factionInfo;
+        int x = leftPos, y = topPos;
+        if (fi == null) {
+            g.drawString(font, Component.translatable("gui.territory.syncing"), x + 10, y + 66, TEXT_DIM, false);
+            return;
+        }
+        if (!fi.inFaction()) {
+            g.drawString(font, Component.translatable("gui.territory.access.nofaction"), x + 10, y + 66, TEXT_DIM, false);
+            return;
+        }
+        g.drawString(font, Component.translatable("gui.territory.access.title", fi.name()), x + 10, y + 50, TITLE_GOLD, false);
+        String[] titles = {"doors", "utility", "deposit"};
+        int textW = imageWidth - 170;
+        for (int i = 0; i < titles.length; i++) {
+            int ry = y + 66 + i * ACCESS_ROW_H;
+            g.drawString(font, Component.translatable("gui.territory.access." + titles[i]), x + 10, ry, 0xFFFFFFFF, false);
+            int dy = ry + 11;
+            for (net.minecraft.util.FormattedCharSequence line : font.split(Component.translatable("gui.territory.access." + titles[i] + ".desc"), textW)) {
+                g.drawString(font, line, x + 10, dy, TEXT_DIM, false);
+                dy += 10;
+            }
+        }
+        int ny = y + 66 + titles.length * ACCESS_ROW_H + 2;
+        for (net.minecraft.util.FormattedCharSequence line : font.split(Component.translatable("gui.territory.access.note"), imageWidth - 20)) {
+            g.drawString(font, line, x + 10, ny, TEXT_DIM, false);
+            ny += 10;
+        }
+        ny += 6;
+        List<String> atWar = fi.extras().atWar();
+        Component war = atWar.isEmpty()
+                ? Component.translatable("gui.territory.access.war.none")
+                : Component.translatable("gui.territory.access.war", String.join(", ", atWar));
+        for (net.minecraft.util.FormattedCharSequence line : font.split(war, imageWidth - 20)) {
+            g.drawString(font, line, x + 10, ny, atWar.isEmpty() ? TEXT_DIM : 0xFFCC6666, false);
+            ny += 10;
+        }
+    }
+
     private void buildPermWidgets(int x, int y) {
+        if (onAccessPage()) {
+            buildAccessWidgets(x, y);
+            return;
+        }
+        if (canFactionAccess() && canSafezones()) {
+            addRenderableWidget(Button.builder(Component.translatable("gui.territory.access.to_faction"), b -> { permsPage = 0; relayout(); })
+                    .bounds(x + imageWidth - 124, y + 45, 114, 12).build());
+        }
         permListX = x + 8;
-        permListY = y + 50;
+        permListY = y + 58;
         permListW = 132;
-        permListH = imageHeight - 58;
+        permListH = imageHeight - 66;
         permDetX = permListX + permListW + 8;
         permDetW = imageWidth - (permDetX - x) - 8;
 
@@ -448,7 +567,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     private void buildMapWidgets(int x, int y) {
         int cx = x + ctrlXoff, cy = y + mapYoff;
-        String typeKey = child() ? "gui.territory.type.child"
+        String typeKey = warzone() ? "gui.territory.type.warzone"
                 : admin() ? "gui.territory.type.admin"
                 : (faction() ? "gui.territory.type.faction" : "gui.territory.type.personal");
         addRenderableWidget(Button.builder(
@@ -464,14 +583,9 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             // named BEFORE painting: whatever is in this box labels the chunks committed with it
             nameField.setValue(lastTypedAdminName != null ? lastTypedAdminName : "");
             nameField.setEditable(true);
-        } else if (child()) {
-            // the plot's name. Typing an existing plot's name edits that plot instead of starting a new one.
-            nameField.setValue(lastTypedChildName != null ? lastTypedChildName : "");
+        } else if (warzone()) {
+            nameField.setValue(lastTypedWarzoneName != null ? lastTypedWarzoneName : "");
             nameField.setEditable(true);
-            nameField.setResponder(v -> {
-                lastTypedChildName = v;
-                recomputeSets();
-            });
         } else {
             nameField.setValue(lastTypedName != null ? lastTypedName : (data != null ? data.personalName() : ""));
             nameField.setEditable(true);
@@ -492,12 +606,16 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         pendingLeave = pendingDisband = false;
         permListScroll = permDetScroll = 0;
         relayout();
-        if (which == TAB_FACTION) PacketDistributor.sendToServer(new FactionInfoRequestC2S(menu.pos));
+        if (which == TAB_FACTION || which == TAB_VAULT) PacketDistributor.sendToServer(new FactionInfoRequestC2S(menu.pos));
+        else if (which == TAB_PERMS) {
+            PacketDistributor.sendToServer(new FactionInfoRequestC2S(menu.pos));
+            requestData();
+        }
         else requestData();   // the permissions tab reads the same payload as the map
     }
 
     /**
-     * Cycle Personal -> Faction -> (Admin, Plot if operator) -> Personal.
+     * Cycle Personal -> Faction -> (Safezone, Warzone if operator) -> Personal.
      *
      * Personal is dropped from the cycle for a faction LEADER: his personal claims became the faction's when
      * he founded it, so offering him a mode that always refuses would just be a button that does nothing.
@@ -508,7 +626,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         types.add(T_FACTION);
         if (data != null && data.canAdminClaim()) {
             types.add(T_ADMIN);
-            types.add(T_CHILD);
+            types.add(T_WARZONE);
         }
         int idx = types.indexOf(claimType);
         claimType = types.get((idx + 1) % types.size());
@@ -586,7 +704,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     @Override
     public boolean mouseClicked(double mx, double my, int button) {
-        if (tab == TAB_PERMS && button == 0 && data != null) {
+        if (tab == TAB_PERMS && button == 0 && data != null && !onAccessPage()) {
             // hit-test the rows drawn this frame, so a click can only ever land on something visible
             for (Hit hit : permHits) {
                 if (mx < hit.x0() || mx >= hit.x1() || my < hit.y0() || my >= hit.y1()) continue;
@@ -610,32 +728,27 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         }
         if (tab == TAB_MAP && button == 0) {
             if (data != null) {
-                int sw = swatchHit(mx, my);
+                int sw = adminSide() ? -1 : swatchHit(mx, my);
                 if (sw >= 0) {
-                    if (adminSide()) {
-                        // staged, not sent: it applies to the chunks this admin commits next, so two admin
-                        // regions can differ. Recolouring live would repaint every admin claim on the server.
-                        adminColor = PRESET_COLORS[sw];
-                    } else {
-                        PacketDistributor.sendToServer(new TerritoryColorC2S(PRESET_COLORS[sw], faction(),
-                                (int) Math.floor(viewCenterX), (int) Math.floor(viewCenterZ), bufRadius));
-                    }
+                    PacketDistributor.sendToServer(new TerritoryColorC2S(PRESET_COLORS[sw], faction(),
+                            (int) Math.floor(viewCenterX), (int) Math.floor(viewCenterZ), bufRadius));
                     return true;
                 }
             }
             if (overMap(mx, my)) {
                 dragging = true;
                 panned = false;
-                painting = false;
+                // Shift at press time arms the brush; otherwise a drag pans, immediately and always
+                painting = hasShiftDown();
                 dragStartMouseX = mx;
                 dragStartMouseY = my;
                 dragStartViewX = viewCenterX;
                 dragStartViewZ = viewCenterZ;
-                pressStartMillis = Util.getMillis();
                 pressChunkX = chunkXAt(mx);
                 pressChunkZ = chunkZAt(my);
                 // brush direction: started on your own land -> relinquish; otherwise -> claim
                 paintErase = data != null && mineSet.contains(ChunkPos.asLong(pressChunkX, pressChunkZ));
+                if (painting && data != null) paintChunk(pressChunkX, pressChunkZ);
                 return true;
             }
         }
@@ -645,12 +758,14 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     @Override
     public boolean mouseDragged(double mx, double my, int button, double dx, double dy) {
         if (dragging && button == 0) {
-            if (painting) {                 // brush armed: drag paints chunks
+            if (painting) {                 // Shift held at press: drag paints chunks
+                panned = true;
                 paintAt(mx, my);
                 return true;
             }
             double totalX = mx - dragStartMouseX, totalY = my - dragStartMouseY;
-            if (Math.abs(totalX) > 3 || Math.abs(totalY) > 3) panned = true;   // moved before arming -> pan
+            // a couple of pixels of jitter is still a tap; anything more is a pan, applied immediately
+            if (Math.abs(totalX) > 2 || Math.abs(totalY) > 2) panned = true;
             float cell = (float) mapPx / SPANS[zoom];
             viewCenterX = dragStartViewX - totalX / cell;
             viewCenterZ = dragStartViewZ - totalY / cell;
@@ -714,7 +829,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             changeZoom(sy > 0 ? -1 : 1);
             return true;
         }
-        if (tab == TAB_PERMS && sy != 0) {
+        if (tab == TAB_PERMS && sy != 0 && !onAccessPage()) {
             int step = (int) (-sy * ROW_H);
             if (mx >= permListX - 2 && mx < permListX + permListW + 2) {
                 permListScroll = Math.max(0, permListScroll + step);
@@ -752,12 +867,6 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     private void toggleChunk(int cx, int cz) {
         long key = ChunkPos.asLong(cx, cz);
-        // said out loud rather than ignored: a chunk that refuses to select with no explanation is the
-        // single most confusing thing this map can do, and colony land is now the commonest reason for it
-        if (colonyBlocked.contains(key)) {
-            messageActionBar("gui.territory.colony_land", colonyName(colonyAt.getOrDefault(key, -1)));
-            return;
-        }
         if (forbidden.contains(key)) return;
         if (stagedAdd.contains(key)) {
             stagedAdd.remove(key);
@@ -805,22 +914,15 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         }
     }
 
-    private void messageActionBar(String key, Object... args) {
-        if (minecraft != null && minecraft.player != null) {
-            minecraft.player.displayClientMessage(Component.translatable(key, args), true);
-        }
-    }
-
     private void commit() {
         if (data == null) return;
         List<Long> add = new ArrayList<>(stagedAdd);
         List<Long> remove = new ArrayList<>(stagedRemove);
-        // personal claims carry the player's territory name; admin claims and plots carry their own
+        // personal claims carry the player's territory name; safezones and warzones carry their own
         String name = (nameField == null || claimType == T_FACTION) ? "" : nameField.getValue();
         boolean nameChanged = claimType == T_PERSONAL && nameField != null && !name.equals(data.personalName());
         if (add.isEmpty() && remove.isEmpty() && !nameChanged) return;
-        int color = adminSide() ? adminColor : -1;
-        PacketDistributor.sendToServer(new TerritoryCommitC2S(claimType, add, remove, name, color,
+        PacketDistributor.sendToServer(new TerritoryCommitC2S(claimType, add, remove, name,
                 (int) Math.floor(viewCenterX), (int) Math.floor(viewCenterZ), bufRadius));
     }
 
@@ -833,7 +935,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         int cx = leftPos + ctrlXoff, cy = topPos + mapYoff + 82;
         int sw = 18, gap = 4;
         for (int i = 0; i < PRESET_COLORS.length; i++) {
-            int col = i % 4, row = i / 4;
+            int col = i % SWATCH_COLS, row = i / SWATCH_COLS;
             int sx = cx + col * (sw + gap), sy = cy + row * (sw + gap);
             if (mx >= sx && mx < sx + sw && my >= sy && my < sy + sw) return i;
         }
@@ -865,6 +967,14 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         g.fill(x, y, x + imageWidth, y + imageHeight, PANEL_BG);
         g.renderOutline(x, y, imageWidth, imageHeight, OUTLINE_DARK);
         g.renderOutline(x + 1, y + 1, imageWidth - 2, imageHeight - 2, OUTLINE_GOLD);
+        if (tab == TAB_VAULT) {
+            for (net.minecraft.world.inventory.Slot slot : menu.slots) {
+                int sx = x + slot.x, sy = y + slot.y;
+                g.fill(sx - 1, sy - 1, sx + 17, sy + 17, slot.index < TerritoryTableMenu.INPUT_SLOTS ? OUTLINE_GOLD : 0xFF3A2E20);
+                g.fill(sx, sy, sx + 16, sy + 16, 0xFF1C1610);
+            }
+            renderVaultPage(g);
+        }
     }
 
     @Override
@@ -896,6 +1006,8 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             renderBrush(g, mouseX, mouseY);
         } else if (tab == TAB_PERMS) {
             renderPermsPage(g, mouseX, mouseY);
+        } else if (tab == TAB_VAULT) {
+            renderTooltip(g, mouseX, mouseY);
         } else {
             renderFactionPage(g);
         }
@@ -906,10 +1018,14 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     /**
      * Two panes: the admin territories on the left, the selected one's switches and trusted players on the
      * right. Everything that can grow lives inside a scissored, scrolling pane with a scrollbar, so a
-     * hundred plots or a long member list scroll rather than run off the panel.
+     * hundred safezones or a long member list scroll rather than run off the panel.
      */
     private void renderPermsPage(GuiGraphics g, int mouseX, int mouseY) {
         permHits.clear();
+        if (onAccessPage()) {
+            renderAccessPage(g);
+            return;
+        }
         if (data == null) return;
 
         List<TerritoryDataS2C.AdminZone> zones = data.adminZones();
@@ -939,11 +1055,9 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             if (y + ROW_H >= permListY && y <= permListY + permListH) {
                 boolean selected = z.name().equals(selectedZone);
                 if (selected) g.fill(permListX, y, permListX + permListW, y + ROW_H - 1, 0x556A4A1C);
-                int indent = z.parent().isEmpty() ? 0 : 8;
-                g.fill(permListX + indent + 1, y + 3, permListX + indent + 6, y + ROW_H - 4,
-                        0xFF000000 | z.color());
-                String text = trim(z.name().isEmpty() ? I18nAdmin() : z.name(), permListW - indent - 34);
-                g.drawString(font, text, permListX + indent + 10, y + 3, selected ? TITLE_GOLD : 0xFFDDDDDD, false);
+                g.fill(permListX + 1, y + 3, permListX + 6, y + ROW_H - 4, 0xFF000000 | z.color());
+                String text = trim(z.name().isEmpty() ? I18nAdmin() : z.name(), permListW - 34);
+                g.drawString(font, text, permListX + 10, y + 3, selected ? TITLE_GOLD : 0xFFDDDDDD, false);
                 g.drawString(font, String.valueOf(z.chunks()), permListX + permListW - 20, y + 3, TEXT_DIM, false);
                 permHits.add(new Hit(permListX, y, permListX + permListW, y + ROW_H, HIT_ZONE, z.name(), 0));
             }
@@ -964,11 +1078,6 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         String header = zone.name().isEmpty() ? I18nAdmin() : zone.name();
         g.drawString(font, Component.literal(header).withStyle(net.minecraft.ChatFormatting.BOLD),
                 permDetX, permListY - 11, TITLE_GOLD, false);
-        if (!zone.parent().isEmpty()) {
-            int w = font.width(header) + 6;
-            g.drawString(font, Component.translatable("gui.territory.perm.child_of", zone.parent()),
-                    permDetX + w, permListY - 11, TEXT_DIM, false);
-        }
 
         // the scrolling body stops short of the "add player" row reserved at the bottom of the panel
         int bodyH = permListH - 22;
@@ -997,6 +1106,13 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         }
 
         y += 4;
+        if (zone.worldGuard()) {
+            for (var line : font.split(Component.translatable("gui.territory.perm.wg"), permDetW - 8)) {
+                if (y + 10 >= permListY && y <= bodyBottom) g.drawString(font, line, permDetX + 4, y, TEXT_DIM, false);
+                y += 10;
+            }
+            y += 4;
+        }
         if (y + ROW_H >= permListY && y <= bodyBottom) {
             g.drawString(font, Component.translatable("gui.territory.perm.members", zone.members().size()),
                     permDetX + 2, y + 3, TEXT_DIM, false);
@@ -1012,8 +1128,6 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             }
             y += ROW_H;
         }
-        // the empty note is a row of its own; drawing it back at the heading's y printed the two on
-        // top of each other, which is what "Trusted players (0)" looked like smeared over "Nobody yet"
         if (zone.members().isEmpty()) {
             if (y + ROW_H >= permListY && y <= bodyBottom) {
                 g.drawString(font, Component.translatable("gui.territory.perm.no_members"),
@@ -1028,7 +1142,8 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     private int permContentHeight(TerritoryDataS2C.AdminZone zone) {
         int rows = 1 + AdminPerm.values().length + 1 + Math.max(1, zone.members().size());
-        return rows * ROW_H + 8;
+        int note = zone.worldGuard() ? font.split(Component.translatable("gui.territory.perm.wg"), permDetW - 8).size() * 10 + 4 : 0;
+        return rows * ROW_H + 8 + note;
     }
 
     private void drawToggle(GuiGraphics g, int x, int y, boolean on) {
@@ -1081,25 +1196,12 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         if (add && memberField != null) memberField.setValue("");
     }
 
-    /** Hold-to-arm brush: counts down on the cursor, then a drag paints claims / relinquishes. */
+    /** Shift-drag brush: a cursor label while a stroke is painting claims / relinquishing them. */
     private void renderBrush(GuiGraphics g, int mouseX, int mouseY) {
-        if (!dragging || panned || data == null) return;
+        if (!dragging || !painting || data == null) return;
         int claimColor = 0xFF66D066, eraseColor = 0xFFD06666;
-        if (painting) {
-            cursorLabel(g, mouseX, mouseY, Component.translatable(paintErase
-                    ? "gui.territory.brush.releasing" : "gui.territory.brush.claiming"), paintErase ? eraseColor : claimColor);
-            return;
-        }
-        if (!overMap(mouseX, mouseY)) return;
-        long elapsed = Util.getMillis() - pressStartMillis;
-        if (elapsed >= BRUSH_ARM_MS) {
-            painting = true;
-            paintAt(mouseX, mouseY);   // paint the chunk you armed on
-            return;
-        }
-        int cd = Math.max(1, Math.min(3, (int) Math.ceil((BRUSH_ARM_MS - elapsed) / (BRUSH_ARM_MS / 3.0))));
         cursorLabel(g, mouseX, mouseY, Component.translatable(paintErase
-                ? "gui.territory.brush.release" : "gui.territory.brush.claim", cd), paintErase ? eraseColor : claimColor);
+                ? "gui.territory.brush.releasing" : "gui.territory.brush.claiming"), paintErase ? eraseColor : claimColor);
     }
 
     private void cursorLabel(GuiGraphics g, int mouseX, int mouseY, Component text, int color) {
@@ -1134,33 +1236,21 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
         g.enableScissor(mx0, my0, mx0 + mapPx, my0 + mapPx);
         if (data != null) {
-            boolean showPlots = data.canAdminClaim();
+            Set<Long> warSet = new HashSet<>();
+            for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
+                if (e.color() == FactionsBridge.WARZONE_COLOR) warSet.add(ChunkPos.asLong(e.x(), e.z()));
+            }
             for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
                 long key = ChunkPos.asLong(e.x(), e.z());
-                // in plot mode the parent territory recedes into the background so the plot being drawn
-                // inside it is the thing you can actually read
-                int fill = child() && !mineSet.contains(key)
-                        ? A_GREYED | dim(e.color()) : A_FILL | (e.color() & 0xFFFFFF);
-                drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, fill, false);
-                // plots are drawn for operators only, and only here: they exist in no other map on the server
-                if (showPlots && e.childIdx() >= 0 && !mineSet.contains(key)) {
-                    drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0,
-                            A_CHILD | (e.childColor() & 0xFFFFFF), true);
-                }
+                boolean war = warSet.contains(key);
+                drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, (war ? A_WARZONE : A_FILL) | (e.color() & 0xFFFFFF), false);
+                if (war) outlineBorder(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, 0xFFFF4040, warSet::contains);
                 if (mineSet.contains(key)) {
                     if (stagedRemove.contains(key)) drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, A_REMOVE, true);
-                    else outlineCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, TITLE_GOLD);
+                    else outlineBorder(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, TITLE_GOLD,
+                            k -> mineSet.contains(k) && !stagedRemove.contains(k));
                 }
             }
-            // The towns under the map. Drawn over the claims on purpose: where a faction claim is still
-            // sitting on a colony, the colony is the thing that decides what happens there, and the map has
-            // to say so rather than showing a clean faction border over somebody's houses.
-            for (Map.Entry<Long, Integer> e : colonyAt.entrySet()) {
-                long key = e.getKey();
-                drawCell(g, ChunkPos.getX(key), ChunkPos.getZ(key), leftX, topZ, cell, mx0, my0,
-                        colonyMine.contains(key) ? A_COLONY_MINE : A_COLONY, false);
-            }
-            drawColonyBorders(g, leftX, topZ, cell, mx0, my0);
             for (long key : stagedAdd) {
                 drawCell(g, ChunkPos.getX(key), ChunkPos.getZ(key), leftX, topZ, cell, mx0, my0, A_ADD, true);
             }
@@ -1176,35 +1266,23 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             g.fill(lx - w / 2 - 2, ly - 5, lx + w / 2 + 2, ly + 5, 0xAA000000);
             g.drawCenteredString(font, c.label, lx, ly - 4, 0xFFFFFFFF);
         }
-        // Colony names sit under the claim labels rather than on top of them: where both exist on one chunk
-        // the claim is the thing being edited, and the town is the thing being respected.
-        for (Cluster c : colonyClusters) {
-            if (c.label.isEmpty()) continue;
-            int lx = mx0 + (int) ((c.cx - leftX) * cell);
-            int ly = my0 + (int) ((c.cz - topZ) * cell);
-            if (lx < mx0 || lx > mx0 + mapPx || ly < my0 || ly > my0 + mapPx) continue;
-            int w = font.width(c.label);
-            g.fill(lx - w / 2 - 2, ly + 6, lx + w / 2 + 2, ly + 16, 0xAA000000);
-            g.drawCenteredString(font, c.label, lx, ly + 7, COLONY_BORDER);
-        }
         g.disableScissor();
         g.renderOutline(mx0 - 1, my0 - 1, mapPx + 2, mapPx + 2, OUTLINE_GOLD);
 
         renderMapControls(g);
+
+        Component hint = Component.translatable("gui.territory.brush.hint");
+        g.drawString(font, hint, leftPos + imageWidth - 8 - font.width(hint), topPos + 32, TEXT_DIM, false);
     }
 
     private void renderMapControls(GuiGraphics g) {
         int cx = leftPos + ctrlXoff, y = topPos + mapYoff;
-        if (data != null && !data.efLoaded()) {
-            g.drawString(font, Component.translatable("gui.territory.no_ef"), cx, y + 22, 0xFFCC6666, false);
-        } else if (child()) {
-            String parent = data == null ? "" : childParentLabel(currentChildName());
-            Component line = parent.isEmpty()
-                    ? Component.translatable("gui.territory.child_pick_parent")
-                    : Component.translatable("gui.territory.child_in", selectionCount(), parent);
-            g.drawString(font, line, cx, y + 22, 0xFFC056C0, false);
+        if (data != null && !data.coreLoaded()) {
+            g.drawString(font, Component.translatable("gui.territory.no_core"), cx, y + 22, 0xFFCC6666, false);
+        } else if (warzone()) {
+            g.drawString(font, Component.translatable("gui.territory.claims_warzone", selectionCount()), cx, y + 22, 0xFFCC5555, false);
         } else if (admin()) {
-            g.drawString(font, Component.translatable("gui.territory.claims_admin", selectionCount()), cx, y + 22, 0xFFC056C0, false);
+            g.drawString(font, Component.translatable("gui.territory.claims_admin", selectionCount()), cx, y + 22, 0xFF000000 | FactionsBridge.SAFEZONE_COLOR, false);
         } else if (data != null) {
             int cap = faction() ? data.factionCap() : data.coreCap();
             int worldUsed = faction() ? data.factionUsed() : data.coreUsed();
@@ -1213,65 +1291,27 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
             g.drawString(font, Component.translatable("gui.territory.claims", projected, cap), cx, y + 22, color, false);
         }
 
-        String nameKey = child() ? "gui.territory.name.child"
+        String nameKey = warzone() ? "gui.territory.name.warzone"
                 : admin() ? "gui.territory.name.admin"
                 : (faction() ? "gui.territory.name.faction" : "gui.territory.name.personal");
         g.drawString(font, Component.translatable(nameKey), cx, y + 36, TEXT_DIM, false);
-        g.drawString(font, Component.translatable("gui.territory.border_color"), cx, y + 70, TEXT_DIM, false);
-        int sy = y + 82, sw = 18, gap = 4;
-        int current = data == null ? -1 : (adminSide() ? (adminColor & 0xFFFFFF)
-                : ((faction() ? data.factionColor() : data.personalColor()) & 0xFFFFFF));
-        for (int i = 0; i < PRESET_COLORS.length; i++) {
-            int col = i % 4, row = i / 4;
-            int sx = cx + col * (sw + gap), yy = sy + row * (sw + gap);
-            g.fill(sx, yy, sx + sw, yy + sw, 0xFF000000 | PRESET_COLORS[i]);
-            g.renderOutline(sx, yy, sw, sw, PRESET_COLORS[i] == current ? 0xFFFFFFFF : OUTLINE_DARK);
+        if (warzone()) {
+            drawWrapped(g, Component.translatable("gui.territory.warzone_color").getString(), cx, y + 70, ctrlW, 0xFFCC5555);
+        } else if (admin()) {
+            drawWrapped(g, Component.translatable("gui.territory.safezone_color").getString(), cx, y + 70, ctrlW, 0xFF000000 | FactionsBridge.SAFEZONE_COLOR);
+        } else {
+            g.drawString(font, Component.translatable("gui.territory.border_color"), cx, y + 70, TEXT_DIM, false);
+            int sy = y + 82, sw = 18, gap = 4;
+            int current = data == null ? -1 : ((faction() ? data.factionColor() : data.personalColor()) & 0xFFFFFF);
+            for (int i = 0; i < PRESET_COLORS.length; i++) {
+                int col = i % SWATCH_COLS, row = i / SWATCH_COLS;
+                int sx = cx + col * (sw + gap), yy = sy + row * (sw + gap);
+                g.fill(sx, yy, sx + sw, yy + sw, 0xFF000000 | PRESET_COLORS[i]);
+                g.renderOutline(sx, yy, sw, sw, PRESET_COLORS[i] == current ? 0xFFFFFFFF : OUTLINE_DARK);
+            }
         }
         g.drawCenteredString(font, Component.translatable("gui.territory.zoom", SPANS[zoom]),
                 cx + ctrlW / 2, y + 132, TEXT_DIM);
-
-        renderColonyLegend(g, cx, y);
-    }
-
-    /**
-     * The one legend the map still needs.
-     *
-     * The two price lines that used to sit here quoted what a selection would cost to put down, which was
-     * true and is now wrong: land is bought on the Faction tab and placed for nothing.
-     */
-    private void renderColonyLegend(GuiGraphics g, int cx, int y) {
-        if (colonyAt.isEmpty()) return;
-        g.drawString(font, Component.translatable("gui.territory.colony_legend"), cx, y + 152,
-                COLONY_BORDER, false);
-    }
-
-    /**
-     * A solid line down every edge where a colony stops.
-     *
-     * Drawn from the chunk data rather than from anything MineColonies hands over as a shape, so it is the
-     * same set of chunks the claiming gate refuses: what the player sees outlined is exactly what they
-     * cannot take. Two colonies that touch get a line between them, since the edge belongs to both.
-     */
-    private void drawColonyBorders(GuiGraphics g, double leftX, double topZ, float cell, int mx0, int my0) {
-        int t = Math.max(1, Math.round(cell / 12f));
-        for (Map.Entry<Long, Integer> e : colonyAt.entrySet()) {
-            long key = e.getKey();
-            int cx = ChunkPos.getX(key), cz = ChunkPos.getZ(key);
-            int id = e.getValue();
-            int px0 = mx0 + Math.round((float) ((cx - leftX) * cell));
-            int pz0 = my0 + Math.round((float) ((cz - topZ) * cell));
-            int px1 = mx0 + Math.round((float) ((cx + 1 - leftX) * cell));
-            int pz1 = my0 + Math.round((float) ((cz + 1 - topZ) * cell));
-            if (!sameColony(cx, cz - 1, id)) g.fill(px0, pz0, px1, pz0 + t, COLONY_BORDER);
-            if (!sameColony(cx, cz + 1, id)) g.fill(px0, pz1 - t, px1, pz1, COLONY_BORDER);
-            if (!sameColony(cx - 1, cz, id)) g.fill(px0, pz0, px0 + t, pz1, COLONY_BORDER);
-            if (!sameColony(cx + 1, cz, id)) g.fill(px1 - t, pz0, px1, pz1, COLONY_BORDER);
-        }
-    }
-
-    private boolean sameColony(int cx, int cz, int id) {
-        Integer other = colonyAt.get(ChunkPos.asLong(cx, cz));
-        return other != null && other == id;
     }
 
     private void drawCell(GuiGraphics g, int cx, int cz, double leftX, double topZ, float cell,
@@ -1295,6 +1335,18 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         g.renderOutline(px0, pz0, px1 - px0, pz1 - pz0, color);
     }
 
+    private void outlineBorder(GuiGraphics g, int cx, int cz, double leftX, double topZ, float cell,
+                               int mx0, int my0, int color, java.util.function.LongPredicate sameGroup) {
+        int px0 = mx0 + Math.round((float) ((cx - leftX) * cell));
+        int pz0 = my0 + Math.round((float) ((cz - topZ) * cell));
+        int px1 = mx0 + Math.round((float) ((cx + 1 - leftX) * cell));
+        int pz1 = my0 + Math.round((float) ((cz + 1 - topZ) * cell));
+        if (!sameGroup.test(ChunkPos.asLong(cx, cz - 1))) g.fill(px0, pz0, px1, pz0 + 1, color);
+        if (!sameGroup.test(ChunkPos.asLong(cx, cz + 1))) g.fill(px0, pz1 - 1, px1, pz1, color);
+        if (!sameGroup.test(ChunkPos.asLong(cx - 1, cz))) g.fill(px0, pz0, px0 + 1, pz1, color);
+        if (!sameGroup.test(ChunkPos.asLong(cx + 1, cz))) g.fill(px1 - 1, pz0, px1, pz1, color);
+    }
+
     private static float clamp(float v, float lo, float hi) {
         return v < lo ? lo : (v > hi ? hi : v);
     }
@@ -1303,7 +1355,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
 
     public void acceptFactionInfo(FactionInfoS2C msg) {
         this.factionInfo = msg;
-        if (tab == TAB_FACTION) relayout();
+        if (tab == TAB_FACTION || tab == TAB_PERMS) relayout();
     }
 
     // faction-tab content spans the full panel width; all coords derive from these so nothing bleeds out
@@ -1452,15 +1504,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
                         ? Component.translatable("gui.territory.on") : Component.translatable("gui.territory.off")),
                         b -> sendFactionAction(FactionActionC2S.FRIENDLY_FIRE, fi.friendlyFire() ? "false" : "true", ""))
                 .bounds(iL, yStart + 48, w, 18).build());
-        // Buy Claims: the /factionbuy idea as a button. Owner-only, server validates funds + raises the cap.
         int row = yStart + 72;
-        if (fi.buyEnabled()) {
-            addRenderableWidget(Button.builder(
-                            Component.translatable("gui.territory.faction.buyclaims", fi.claimsPerPurchase()),
-                            b -> sendFactionAction(FactionActionC2S.BUY_CLAIMS, "", ""))
-                    .bounds(iL, row, w, 18).build());
-            row += 24;
-        }
         addRenderableWidget(Button.builder(Component.translatable(pendingDisband
                         ? "gui.territory.faction.disband_confirm" : "gui.territory.faction.disband"), b -> {
                     if (pendingDisband) { sendFactionAction(FactionActionC2S.DISBAND, "", ""); pendingDisband = false; }
@@ -1477,8 +1521,8 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         int x = leftPos, y = topPos;
         int iL = innerL(), iR = innerR();
         FactionInfoS2C fi = factionInfo;
-        if (fi != null && !fi.efLoaded()) {
-            g.drawString(font, Component.translatable("gui.territory.no_ef"), iL, y + 50, 0xFFCC6666, false);
+        if (fi != null && !fi.coreLoaded()) {
+            g.drawString(font, Component.translatable("gui.territory.no_core"), iL, y + 50, 0xFFCC6666, false);
             return;
         }
         if (fi == null) {
@@ -1517,22 +1561,34 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         }
     }
 
-    /** One bottom line on the Options tab: the faction's claim capacity, and (for the owner) the buy cost.
+    /** One bottom line on the Options tab: claim capacity and the state of the faction core's upkeep.
      *  Clipped to the inner panel so long numbers can't bleed past the edge. */
     private void renderOptionsInfo(GuiGraphics g, int iL, int iR, FactionInfoS2C fi) {
         int y = topPos + imageHeight - 11;
         StringBuilder s = new StringBuilder("Claims ").append(fi.factionUsed()).append(" / ").append(fi.factionCap());
-        if (fi.bonusClaims() > 0) s.append(" (+").append(fi.bonusClaims()).append(" bought)");
-        if (fi.isOwner() && fi.buyEnabled()) {
-            // Show the SDM price on SDM servers; emeralds are only the fallback where SDM is not installed.
-            String price = net.neoforged.fml.ModList.get().isLoaded("sdmeconomy")
-                    ? fi.costSdm() + " SDM"
-                    : fi.costEmerald() + " emeralds";
-            s.append("   ·   Buy ").append(fi.claimsPerPurchase()).append(": ").append(price);
+        if (!fi.hasCore()) {
+            s.append("   ·   No core table");
+        } else if (fi.dueValue() > 0) {
+            s.append("   ·   Core covers ").append(duration(minutesFor(fi.coreValue(), fi.factionUsed())));
+        } else {
+            s.append("   ·   No upkeep due");
         }
+        if (fi.dueValue() > 0) {
+            s.append("   ·   Due in ").append(duration(fi.minutesToNext()));
+        }
+        long warn = fi.extras().warnMinutes();
+        long runway = fi.dueValue() > 0 ? fi.minutesToNext() + (long) (fi.coreValue() / fi.dueValue()) * fi.intervalMinutes() : Long.MAX_VALUE;
+        boolean low = warn > 0 && fi.hasCore() && runway < warn;
+        if (low) s.append("   ·   LOW");
         g.enableScissor(iL, y - 1, iR, y + 9);
-        g.drawString(font, s.toString(), iL, y, TEXT_DIM, false);
+        g.drawString(font, s.toString(), iL, y, low ? 0xFFCC6666 : TEXT_DIM, false);
         g.disableScissor();
+        List<String> atWar = fi.extras().atWar();
+        if (!atWar.isEmpty()) {
+            g.enableScissor(iL, y - 12, iR, y - 2);
+            g.drawString(font, "At war with " + String.join(", ", atWar), iL, y - 11, 0xFFCC6666, false);
+            g.disableScissor();
+        }
     }
 
     private void renderMembersTab(GuiGraphics g, int iL, int yStart, FactionInfoS2C fi) {

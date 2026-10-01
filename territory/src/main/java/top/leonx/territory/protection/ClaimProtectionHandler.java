@@ -1,14 +1,19 @@
 package top.leonx.territory.protection;
 
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import net.minecraft.ChatFormatting;
 import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BucketItem;
 import net.minecraft.world.item.ItemStack;
-import net.minecraft.world.Container;
 import net.minecraft.world.item.MobBucketItem;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
@@ -16,283 +21,272 @@ import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
+import net.neoforged.fml.common.EventBusSubscriber.Bus;
 import net.neoforged.neoforge.event.entity.EntityMobGriefingEvent;
 import net.neoforged.neoforge.event.entity.living.LivingIncomingDamageEvent;
-import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
-import net.neoforged.neoforge.event.level.BlockEvent;
-import net.neoforged.neoforge.event.level.ExplosionEvent;
-import net.neoforged.neoforge.event.level.PistonEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.EntityInteract;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.LeftClickBlock;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickBlock;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent.RightClickItem;
+import net.neoforged.neoforge.event.level.BlockEvent.BreakEvent;
+import net.neoforged.neoforge.event.level.BlockEvent.EntityPlaceEvent;
+import net.neoforged.neoforge.event.level.ExplosionEvent.Detonate;
+import net.neoforged.neoforge.event.level.PistonEvent.Pre;
 import net.neoforged.neoforge.event.server.ServerStartedEvent;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import top.leonx.territory.TerritoryConfig;
 import top.leonx.territory.TerritoryMod;
-import top.leonx.territory.integration.EasyFactionsBridge;
-import top.leonx.territory.integration.EasyFactionsBridge.Decision;
-import top.leonx.territory.integration.MineColoniesBridge;
+import top.leonx.territory.integration.FactionsBridge;
+import top.leonx.territory.integration.Upkeep;
 import top.leonx.territory.world.Interaction;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-
-/**
- * Enforcement for the two things Easy Factions cannot decide correctly on its own.
- *
- * <h2>1. Personal claims actually belonging to someone</h2>
- * Easy Factions' permission check for a CORE claim asks whether the chunk belongs to the claim's owner —
- * which is trivially true for any claimed chunk — and never compares it against the player standing there.
- * The result is that personal claims permit everyone to do everything: they draw a coloured square on the
- * map and protect nothing. This handler asks the question the other way round, so a personal claim keeps
- * strangers out the way a faction claim does.
- *
- * <h2>2. Admin territories having their own rules</h2>
- * Easy Factions applies one global restriction list to every admin claim on the server, so spawn and an
- * arena can never differ. A territory with its own switches answers for itself here.
- *
- * <h2>Why LOWEST priority with receiveCanceled</h2>
- * Easy Factions' own handlers run first and have already had their say. Running last, with cancelled events
- * still delivered, is what lets this both CANCEL what Easy Factions wrongly permitted (personal claims) and
- * UN-CANCEL what it wrongly forbade (an admin territory that allows something the global config does not).
- * Anything this mod has no opinion on returns {@link Decision#DEFER} and Easy Factions' verdict stands
- * untouched, so a server that never opens the permissions tab behaves exactly as it did before.
- */
-@EventBusSubscriber(modid = TerritoryMod.MODID, bus = EventBusSubscriber.Bus.GAME)
+@EventBusSubscriber(
+   modid = "holdfast_factions",
+   bus = Bus.GAME
+)
 public final class ClaimProtectionHandler {
+   private static final Logger LOG = LoggerFactory.getLogger("territory-protection");
+   private static final Map<UUID, Long> LAST_WARNING = new HashMap<>();
+   private static final long WARNING_COOLDOWN_TICKS = 40L;
+   private static List<BlockPos> explosionSnapshot;
 
-    private ClaimProtectionHandler() {}
+   private ClaimProtectionHandler() {
+   }
 
-    private static final Logger LOG = LoggerFactory.getLogger("territory-protection");
-
-    /** Last game tick each player was told off, so holding a mouse button cannot spam their action bar. */
-    private static final Map<UUID, Long> LAST_WARNING = new HashMap<>();
-    private static final long WARNING_COOLDOWN_TICKS = 40L;
-
-    /**
-     * Say plainly, once, what protection is actually going to do on this server.
-     *
-     * A silent mod is indistinguishable from a broken one, and every cause of "claims stopped working" found
-     * so far has been invisible: a config read from a file nobody edited, an empty restriction list, a rank
-     * that bypasses everything. All of it is printed here so the answer is in the log before the complaint is.
-     */
-    @SubscribeEvent
-    public static void onServerStarted(ServerStartedEvent event) {
-        if (!EasyFactionsBridge.loaded()) {
-            LOG.warn("Easy Factions is not loaded; Territory claim protection is inactive.");
-            return;
-        }
-        if (!TerritoryConfig.protectionEnabled()) {
-            LOG.warn("protectionEnabled=false in territory-server.toml: claims are enforced by Easy Factions "
-                    + "alone, which cannot enforce personal claims at all.");
-            return;
-        }
-        LOG.info("Claim protection active. faction={} personal={} ownRestrictionList={} bypassPermissionLevel={}",
-                TerritoryConfig.enforceFactionClaims(), TerritoryConfig.enforcePersonalClaims(),
-                TerritoryConfig.useOwnRestrictions(), TerritoryConfig.bypassPermissionLevel());
-        LOG.info("Protected interactions: {}. Containers are {}. Easy Factions' wider refusals are {}.",
-                TerritoryConfig.restrictedInteractions(),
-                TerritoryConfig.protectContainers() ? "owner-only" : "open to everyone",
-                TerritoryConfig.overrideEasyFactions() ? "undone to match that list" : "left in place");
-
-        if (!MineColoniesBridge.loaded()) {
-            LOG.info("MineColonies is not installed; colony priority over claims is inactive.");
-        } else if (!TerritoryConfig.respectColonyClaims() && !TerritoryConfig.colonyMembersKeepTheirLand()) {
-            LOG.warn("MineColonies is installed but colony priority is switched OFF on both counts. Factions "
-                    + "can claim other people's colonies, and a colony's own members can be locked out of "
-                    + "their town by a rival claim.");
-        } else if (!MineColoniesBridge.selfTest(event.getServer())) {
-            LOG.error("MineColonies is installed but its claim API did not answer, so colony land cannot be "
-                    + "told apart from open ground. Colony priority is OFF for this run: factions CAN claim "
-                    + "other people's colonies. See the error logged above this line.");
-        } else {
-            LOG.info("MineColonies found and answering. Colonies outrank claims: claiming another colony is "
-                    + "{}, and a colony's own people are {} inside it.",
-                    TerritoryConfig.respectColonyClaims() ? "refused" : "ALLOWED (respectColonyClaims=false)",
-                    TerritoryConfig.colonyMembersKeepTheirLand() ? "free" : "NOT exempt "
-                            + "(colonyMembersKeepTheirLand=false)");
-        }
-
-        List<String> unknown = TerritoryConfig.unknownInteractions();
-        if (!unknown.isEmpty()) {
+   @SubscribeEvent
+   public static void onServerStarted(ServerStartedEvent event) {
+      if (!FactionsBridge.loaded()) {
+         LOG.warn("Holdfast Factions is not loaded; Territory claim protection is inactive.");
+      } else if (!TerritoryConfig.protectionEnabled()) {
+         LOG.warn("protectionEnabled=false in territory-server.toml: claims are enforced by Holdfast Factions alone, which cannot enforce personal claims at all.");
+      } else {
+         LOG.info(
+            "Claim protection active. faction={} personal={} ownRestrictionList={} bypassPermissionLevel={}",
+            new Object[]{
+               TerritoryConfig.enforceFactionClaims(),
+               TerritoryConfig.enforcePersonalClaims(),
+               TerritoryConfig.useOwnRestrictions(),
+               TerritoryConfig.bypassPermissionLevel()
+            }
+         );
+         LOG.info(
+            "Protected interactions: {}. Containers are {}. Holdfast Factions' wider refusals are {}.",
+            new Object[]{
+               TerritoryConfig.restrictedInteractions(),
+               TerritoryConfig.protectContainers() ? "owner-only" : "open to everyone",
+               TerritoryConfig.overrideHoldfastFactions() ? "undone to match that list" : "left in place"
+            }
+         );
+         List<String> unknown = TerritoryConfig.unknownInteractions();
+         if (!unknown.isEmpty()) {
             LOG.warn("Ignoring unrecognised entries in restrictedInteractions: {}", unknown);
-        }
-        if (TerritoryConfig.restrictedInteractions().isEmpty() && TerritoryConfig.useOwnRestrictions()) {
+         }
+
+         if (TerritoryConfig.restrictedInteractions().isEmpty() && TerritoryConfig.useOwnRestrictions()) {
             LOG.warn("restrictedInteractions is EMPTY: claims will protect nothing.");
-        }
-        for (String warning : EasyFactionsBridge.protectionWarnings()) {
+         }
+
+         for (String warning : FactionsBridge.protectionWarnings()) {
             LOG.warn(warning);
-        }
-        List<String> overrides = TerritoryConfig.perWorldConfigOverrides(
-                event.getServer().getWorldPath(LevelResource.ROOT));
-        if (!overrides.isEmpty()) {
-            LOG.warn("This world overrides {} from its own serverconfig folder. Those copies WIN over "
-                    + "config/, so edits made in config/ are being ignored. Edit the copies under "
-                    + "<world>/serverconfig/ instead, or delete them.", overrides);
-        }
-        LOG.info("Run /territory diagnose in game to see what a claim actually decides for the chunk you "
-                + "are standing in.");
-    }
+         }
 
-    // ---- block / item / entity interactions ----------------------------------------------------------
+         List<String> overrides = TerritoryConfig.perWorldConfigOverrides(event.getServer().getWorldPath(LevelResource.ROOT));
+         if (!overrides.isEmpty()) {
+            LOG.warn(
+               "This world overrides {} from its own serverconfig folder. Those copies WIN over config/, so edits made in config/ are being ignored. Edit the copies under <world>/serverconfig/ instead, or delete them.",
+               overrides
+            );
+         }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onBlockBreak(BlockEvent.BreakEvent event) {
-        apply(event.getPlayer(), event.getPos(), Interaction.BREAK_BLOCK, event::setCanceled, event.isCanceled());
-    }
+         LOG.info("Run /territory diagnose in game to see what a claim actually decides for the chunk you are standing in.");
+      }
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onBlockPlace(BlockEvent.EntityPlaceEvent event) {
-        if (!(event.getEntity() instanceof Player player)) return;
-        apply(player, event.getPos(), Interaction.PLACE_BLOCK, event::setCanceled, event.isCanceled());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onBlockBreak(BreakEvent event) {
+      apply(event.getPlayer(), event.getPos(), Interaction.BREAK_BLOCK, event::setCanceled, event.isCanceled());
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onRightClickBlock(PlayerInteractEvent.RightClickBlock event) {
-        // buckets are their own switch in Easy Factions; a chest is a switch of OUR own, so that a server can
-        // let visitors open doors without also handing them everything stored behind those doors
-        Interaction type = isBucket(event.getItemStack()) ? Interaction.USE_BUCKET
-                : isContainer(event.getLevel(), event.getPos()) ? Interaction.CONTAINER
-                : Interaction.RIGHT_CLICK_BLOCK;
-        apply(event.getEntity(), event.getPos(), type, event::setCanceled, event.isCanceled());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onBlockPlace(EntityPlaceEvent event) {
+      if (event.getEntity() instanceof Player player) {
+         apply(player, event.getPos(), Interaction.PLACE_BLOCK, event::setCanceled, event.isCanceled());
+      }
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onLeftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
-        apply(event.getEntity(), event.getPos(), Interaction.LEFT_CLICK_BLOCK, event::setCanceled, event.isCanceled());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onRightClickBlock(RightClickBlock event) {
+      Interaction type = isBucket(event.getItemStack())
+         ? Interaction.USE_BUCKET
+         : BlockKinds.rightClickKind(event.getLevel(), event.getPos());
+      apply(event.getEntity(), event.getPos(), type, event::setCanceled, event.isCanceled());
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onRightClickItem(PlayerInteractEvent.RightClickItem event) {
-        apply(event.getEntity(), event.getPos(), Interaction.RIGHT_CLICK_ITEM, event::setCanceled, event.isCanceled());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onLeftClickBlock(LeftClickBlock event) {
+      apply(event.getEntity(), event.getPos(), Interaction.LEFT_CLICK_BLOCK, event::setCanceled, event.isCanceled());
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onEntityInteract(PlayerInteractEvent.EntityInteract event) {
-        apply(event.getEntity(), event.getPos(), Interaction.INTERACT_ENTITY, event::setCanceled, event.isCanceled());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onRightClickItem(RightClickItem event) {
+      apply(event.getEntity(), event.getPos(), Interaction.RIGHT_CLICK_ITEM, event::setCanceled, event.isCanceled());
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onEntityAttacked(LivingIncomingDamageEvent event) {
-        if (!(event.getSource().getEntity() instanceof Player player)) return;
-        // the chunk that matters is where the VICTIM is standing, matching Easy Factions
-        apply(player, event.getEntity().blockPosition(), Interaction.PLAYER_ATTACK,
-                event::setCanceled, event.isCanceled());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onEntityInteract(EntityInteract event) {
+      Interaction kind = MountRules.isRideAttempt(event.getEntity(), event.getTarget(), event.getItemStack()) ? Interaction.MOUNT : Interaction.INTERACT_ENTITY;
+      apply(event.getEntity(), event.getPos(), kind, event::setCanceled, event.isCanceled());
+   }
 
-    // ---- world mechanics with no player behind them --------------------------------------------------
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onEntityAttacked(LivingIncomingDamageEvent event) {
+      if (event.getSource().getEntity() instanceof Player player) {
+         Interaction kind = event.getEntity() instanceof Player ? Interaction.PVP : Interaction.PLAYER_ATTACK;
+         apply(player, event.getEntity().blockPosition(), kind, event::setCanceled, event.isCanceled());
+      }
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST, receiveCanceled = true)
-    public static void onPistonMove(PistonEvent.Pre event) {
-        if (!(event.getLevel() instanceof Level level) || level.isClientSide()) return;
-        Decision decision = EasyFactionsBridge.decideAmbient(level.getServer(), level.dimension(),
-                new ChunkPos(event.getPos()), Interaction.PISTON_MOVE);
-        if (decision == Decision.DENY) event.setCanceled(true);
-        else if (decision == Decision.ALLOW) event.setCanceled(false);
-    }
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST,
+      receiveCanceled = true
+   )
+   public static void onPistonMove(Pre event) {
+      if (event.getLevel() instanceof Level level && !level.isClientSide()) {
+         FactionsBridge.Decision decision = FactionsBridge.decideAmbient(
+            level.getServer(), level.dimension(), event.getPos(), Interaction.PISTON_MOVE
+         );
+         if (decision == FactionsBridge.Decision.DENY) {
+            event.setCanceled(true);
+         } else if (decision == FactionsBridge.Decision.ALLOW) {
+            event.setCanceled(false);
+         }
 
-    // no receiveCanceled here: EntityMobGriefingEvent is not a cancellable event, and asking for cancelled
-    // deliveries on one is a hard registration error in NeoForge
-    @SubscribeEvent(priority = EventPriority.LOWEST)
-    public static void onMobGriefing(EntityMobGriefingEvent event) {
-        if (event.getEntity() == null) return;
-        MinecraftServer server = event.getEntity().getServer();
-        if (server == null) return;
-        Decision decision = EasyFactionsBridge.decideAmbient(server, event.getEntity().level().dimension(),
-                event.getEntity().chunkPosition(), Interaction.MOB_GRIEFING_DAMAGE);
-        if (decision == Decision.DENY) event.setCanGrief(false);
-        else if (decision == Decision.ALLOW) event.setCanGrief(true);
-    }
+         return;
+      }
+   }
 
-    /**
-     * Explosions are the one case that cannot be decided after the fact: Easy Factions REMOVES the blocks it
-     * wants to protect from the affected list, and a removed block cannot be put back from information the
-     * event still carries. So the list is photographed before Easy Factions touches it, and any block inside
-     * an admin territory that permits explosions is restored afterwards.
-     */
-    private static List<BlockPos> explosionSnapshot;
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST
+   )
+   public static void onMobGriefing(EntityMobGriefingEvent event) {
+      if (event.getEntity() != null) {
+         MinecraftServer server = event.getEntity().getServer();
+         if (server != null) {
+            FactionsBridge.Decision decision = FactionsBridge.decideAmbient(
+               server, event.getEntity().level().dimension(), event.getEntity().blockPosition(), Interaction.MOB_GRIEFING_DAMAGE
+            );
+            if (decision == FactionsBridge.Decision.DENY) {
+               event.setCanGrief(false);
+            } else if (decision == FactionsBridge.Decision.ALLOW) {
+               event.setCanGrief(true);
+            }
+         }
+      }
+   }
 
-    @SubscribeEvent(priority = EventPriority.HIGHEST)
-    public static void onExplosionBefore(ExplosionEvent.Detonate event) {
-        explosionSnapshot = event.getLevel().isClientSide() ? null : new ArrayList<>(event.getAffectedBlocks());
-    }
+   @SubscribeEvent(
+      priority = EventPriority.HIGHEST
+   )
+   public static void onExplosionBefore(Detonate event) {
+      explosionSnapshot = event.getLevel().isClientSide() ? null : new ArrayList<>(event.getAffectedBlocks());
+   }
 
-    @SubscribeEvent(priority = EventPriority.LOWEST)
-    public static void onExplosionAfter(ExplosionEvent.Detonate event) {
-        List<BlockPos> before = explosionSnapshot;
-        explosionSnapshot = null;
-        if (before == null || event.getLevel().isClientSide()) return;
-        MinecraftServer server = event.getLevel().getServer();
-        if (server == null) return;
-        ResourceKey<Level> dim = event.getLevel().dimension();
+   @SubscribeEvent(
+      priority = EventPriority.LOWEST
+   )
+   public static void onExplosionAfter(Detonate event) {
+      List<BlockPos> before = explosionSnapshot;
+      explosionSnapshot = null;
+      if (before != null && !event.getLevel().isClientSide()) {
+         MinecraftServer server = event.getLevel().getServer();
+         if (server != null) {
+            ResourceKey<Level> dim = event.getLevel().dimension();
+            List<BlockPos> affected = event.getAffectedBlocks();
+            Map<Long, FactionsBridge.Decision> byChunk = new HashMap<>();
+            affected.removeIf(posx -> ruling(server, dim, posx, byChunk) == FactionsBridge.Decision.DENY);
 
-        List<BlockPos> affected = event.getAffectedBlocks();
-        // a decision per CHUNK, not per block: an explosion touches hundreds of blocks in a handful of chunks
-        Map<Long, Decision> byChunk = new HashMap<>();
-        affected.removeIf(pos -> ruling(server, dim, pos, byChunk) == Decision.DENY);
-        for (BlockPos pos : before) {
-            if (ruling(server, dim, pos, byChunk) == Decision.ALLOW && !affected.contains(pos)) affected.add(pos);
-        }
-    }
+            for (BlockPos pos : before) {
+               if (ruling(server, dim, pos, byChunk) == FactionsBridge.Decision.ALLOW && !affected.contains(pos)) {
+                  affected.add(pos);
+               }
+            }
 
-    private static Decision ruling(MinecraftServer server, ResourceKey<Level> dim, BlockPos pos,
-                                   Map<Long, Decision> cache) {
-        ChunkPos chunk = new ChunkPos(pos);
-        return cache.computeIfAbsent(chunk.toLong(), k ->
-                EasyFactionsBridge.decideAmbient(server, dim, chunk, Interaction.EXPLOSION_DAMAGE));
-    }
+            for (BlockPos pos : new ArrayList<>(affected)) {
+               if (event.getLevel().getBlockState(pos).is(TerritoryMod.TERRITORY_TABLE.get())) {
+                  Upkeep.coreBlownUp(server, dim, pos);
+               }
+            }
+         }
+      }
+   }
 
-    // ---- shared plumbing ------------------------------------------------------------------------------
+   private static FactionsBridge.Decision ruling(MinecraftServer server, ResourceKey<Level> dim, BlockPos pos, Map<Long, FactionsBridge.Decision> cache) {
+      if (FactionsBridge.handsOff(server, dim, pos)) {
+         return FactionsBridge.Decision.DEFER;
+      }
 
-    private interface Canceller {
-        void set(boolean canceled);
-    }
+      ChunkPos chunk = new ChunkPos(pos);
+      return cache.computeIfAbsent(chunk.toLong(), k -> FactionsBridge.decideAmbient(server, dim, chunk, Interaction.EXPLOSION_DAMAGE));
+   }
 
-    private static void apply(Player player, BlockPos pos, Interaction interaction, Canceller canceller,
-                              boolean currentlyCanceled) {
-        if (player == null || pos == null || player.level().isClientSide()) return;
-        Decision decision = EasyFactionsBridge.decide(player, player.level().dimension(), new ChunkPos(pos), interaction);
-        if (decision == Decision.DENY) {
-            if (!currentlyCanceled) warn(player, pos);
+   private static void apply(Player player, BlockPos pos, Interaction interaction, ClaimProtectionHandler.Canceller canceller, boolean currentlyCanceled) {
+      if (player != null && pos != null && !player.level().isClientSide()) {
+         FactionsBridge.Decision decision = FactionsBridge.decide(player, player.level().dimension(), pos, interaction);
+         if (decision == FactionsBridge.Decision.DENY) {
+            if (!currentlyCanceled) {
+               warn(player, pos);
+            }
+
             canceller.set(true);
-        } else if (decision == Decision.ALLOW && currentlyCanceled) {
+         } else if (decision == FactionsBridge.Decision.ALLOW && currentlyCanceled) {
             canceller.set(false);
-        }
-    }
+         }
+      }
+   }
 
-    /** Tell the player WHY nothing happened, on the action bar, at most once every two seconds. */
-    private static void warn(Player player, BlockPos pos) {
-        MinecraftServer server = player.getServer();
-        if (server == null || !(player instanceof net.minecraft.server.level.ServerPlayer sp)) return;
-        long now = player.level().getGameTime();
-        Long last = LAST_WARNING.get(player.getUUID());
-        if (last != null && now - last < WARNING_COOLDOWN_TICKS) return;
-        LAST_WARNING.put(player.getUUID(), now);
+   private static void warn(Player player, BlockPos pos) {
+      MinecraftServer server = player.getServer();
+      if (server != null && player instanceof ServerPlayer sp) {
+         long now = player.level().getGameTime();
+         Long last = LAST_WARNING.get(player.getUUID());
+         if (last == null || now - last >= 40L) {
+            LAST_WARNING.put(player.getUUID(), now);
+            String owner = FactionsBridge.chunkOwnerDisplay(server, player.level().dimension(), new ChunkPos(pos));
+            Component msg = owner.isEmpty()
+               ? Component.translatable("message.territory.protected")
+               : Component.translatable("message.territory.protected_by", new Object[]{owner});
+            sp.displayClientMessage(msg.copy().withStyle(ChatFormatting.RED), true);
+         }
+      }
+   }
 
-        String owner = EasyFactionsBridge.chunkOwnerDisplay(server, player.level().dimension(), new ChunkPos(pos));
-        Component msg = owner.isEmpty()
-                ? Component.translatable("message.territory.protected")
-                : Component.translatable("message.territory.protected_by", owner);
-        sp.displayClientMessage(msg.copy().withStyle(ChatFormatting.RED), true);
-    }
+   private static boolean isBucket(ItemStack stack) {
+      return stack.getItem() instanceof BucketItem || stack.getItem() instanceof MobBucketItem;
+   }
 
-    private static boolean isBucket(ItemStack stack) {
-        return stack.getItem() instanceof BucketItem || stack.getItem() instanceof MobBucketItem;
-    }
-
-    /**
-     * Whether the block at {@code pos} is something that STORES ITEMS: a chest, barrel, shulker, hopper,
-     * furnace, brewing stand, dispenser, or any modded block entity built on the same interface.
-     *
-     * Deliberately tested by asking the block entity, not by listing block types. A crafting table, an
-     * anvil and an enchanting table all open a screen without holding anything, so none of them counts and
-     * none of them is affected by the container switch. An ender chest holds no inventory of its own — what
-     * it opens is the player's — so it is not a container here either.
-     */
-    private static boolean isContainer(Level level, BlockPos pos) {
-        // never force-load a chunk to answer a permission question; an unloaded chunk cannot be clicked
-        if (level == null || !level.isLoaded(pos)) return false;
-        return level.getBlockEntity(pos) instanceof Container;
-    }
+   private interface Canceller {
+      void set(boolean var1);
+   }
 }

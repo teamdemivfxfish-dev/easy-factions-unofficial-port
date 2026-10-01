@@ -1,0 +1,5 @@
+{
+    "variants": {
+        "": { "model": "holdfast_factions:block/territory_table" }
+    }
+}

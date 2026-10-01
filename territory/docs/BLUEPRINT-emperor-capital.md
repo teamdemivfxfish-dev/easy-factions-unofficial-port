@@ -24,7 +24,7 @@ Everything except "who is the Emperor" is built and shipped:
 - `AdminTerritories.Territory` already carries a **member list**, and `AdminTerritories.isTrusted` already
   answers "may this player act on this chunk". Membership already flows downhill from a parent to its
   children.
-- `EasyFactionsBridge.adminDecision` already asks that question before it looks at any permission switch,
+- `FactionsBridge.adminDecision` already asks that question before it looks at any permission switch,
   so a trusted player is exempt from a territory's rules today.
 - Child plots already exist, already sit inside their parent by construction, and already answer for their
   own permissions before the parent does.
@@ -86,7 +86,7 @@ tells War 'n Nobility who the Emperor is.
 ### 4. What must stay true
 
 - The capital stays an **admin claim**. It is never converted to a faction claim, and the Emperor never
-  "owns" it in Easy Factions' data. Losing the title has to cost nothing and move nothing.
+  "owns" it in Holdfast Factions' data. Losing the title has to cost nothing and move nothing.
 - **Plots stay invisible outside the Territory Table**, as they are now. The map, the atlas, Here Be Doodles
   and the War Frame all keep showing one territory called King's Landing.
 - An **operator is still above all of this**. Ops bypass every check before any of it is consulted.
