@@ -8,9 +8,9 @@ import net.minecraft.resources.ResourceLocation;
 import top.leonx.territory.TerritoryMod;
 
 /**
- * Client -> server: a Faction tab button press. The server maps {@code action} to a fixed Easy Factions
+ * Client -> server: a Faction tab button press. The server maps {@code action} to a fixed Holdfast Factions
  * command template (or the disband API), sanitizes {@code arg}/{@code arg2}, and runs it as the player so
- * EF does all validation, permission checks, and messaging. {@code arg2} is only used by SET_RELATION.
+ * the core does all validation, permission checks, and messaging. {@code arg2} is only used by SET_RELATION.
  */
 public record FactionActionC2S(BlockPos pos, int action, String arg, String arg2) implements CustomPacketPayload {
 
@@ -27,7 +27,8 @@ public record FactionActionC2S(BlockPos pos, int action, String arg, String arg2
     public static final int FRIENDLY_FIRE = 10;
     public static final int DISBAND = 11;
     public static final int REVOKE = 12;
-    public static final int BUY_CLAIMS = 13;   // owner pays to raise the faction claim cap (handled in the bridge)
+    public static final int DEPOSIT = 13;
+    public static final int SET_SETTING = 14;
 
     public static final Type<FactionActionC2S> TYPE =
             new Type<>(ResourceLocation.fromNamespaceAndPath(TerritoryMod.MODID, "faction_action"));

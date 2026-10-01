@@ -1,0 +1,63 @@
+Holdfast Factions 1.0.0
+Jar: holdfast_factions-neoforge-1.0.0.jar
+Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by Leon (leon_mout) and cnlimiter.
+
+ONE MOD, NEW NAME
+- The mod is now called Holdfast Factions, and the Territory Table is no longer a separate mod. Everything is one mod in one jar, so there is no "territory requires ..." error any more.
+- The mod id is now holdfast_factions.
+- CLAIMS START OVER, EVERYTHING ELSE CARRIES OVER. Factions and alliances (members, ranks, relations, colours, abbreviations), personal territory names and colours, and the King-of-the-Hill objective data all carry over unchanged. Claims start empty, including admin territories, so no existing base is touched by upkeep or by the new claim rules. Factions claim their land again from the Territory Table, and admins draw their territories again.
+- EVERY PLACED TERRITORY TABLE IS RESET. The table now has the id holdfast_factions:territory_table, so tables from earlier releases no longer exist: the placed ones disappear from the world, and any held in inventories or chests vanish too. Everything else players built stays as it is. Each faction crafts a new table (paper, compass, paper over three planks), and the first one a member places or deposits into becomes that faction's core. Back up the world before updating.
+- The old claims are not deleted. They stay in the world's data folder (faction_claims.dat, territory_admin_zones.dat) and are simply never read.
+- Config files are named after the mod id, so the old easy_factions-*.toml files are ignored and the new holdfast_factions-*.toml files start at their defaults. Copy tuned values across by hand if you want to keep them. territory-server.toml keeps its name and its values. The faction menu keybind resets once.
+- To update: remove the old faction jar and any separate Territory jar from the mods folder, then add the Holdfast Factions jar. Do not keep both, or NeoForge reports the same mod twice.
+- Maps and Quills (modId warpaint) still requires the old Easy Factions mod id and reads its classes by their old package, so it cannot run next to Holdfast Factions until its author updates it.
+
+NEW
+- Land upkeep, paid in Create: Numismatics coins. Faction land now costs upkeep instead of being bought. Once per interval of real time (24 hours by default) each faction pays 4 spurs per claimed chunk (default) from its core. Any coin counts at its value: spur 1, bevel 8, sprocket 16, cog 64, crown 512, sun 4096. Whatever the faction cannot pay for is released automatically, outermost chunks first, so the border shrinks back toward the core.
+- Only faction land costs upkeep. Safezones and warzones are never counted, charged or released, and personal claims are free too.
+- Create: Numismatics is optional. Without it, upkeep is paid in ores and gems instead: raw copper, iron and gold, their ingots, emeralds, diamonds and netherite ingots, counted in credits (a 50-chunk faction pays 200 credits a day, about 13 iron ingots). Both item lists and their values are configurable. When Numismatics is installed, only its coins are accepted.
+- Faction core. Every faction has exactly one Territory Table that acts as its core and vault. Right-click it holding coins to deposit. The coins are physical: they stay inside the table and drop if it is broken. It works like a Rust tool cupboard: upkeep just uses up what is inside. Items are used whole, cheapest first, and no change is given back. Any value beyond what is due stays in the table as credit and counts toward the next payments, so a big coin is never wasted (a sun coin covers about 20 days for a 50-chunk faction). Breaking the table drops the items but the stored credit is lost. A faction cannot place a second table.
+- 5 day grace. When a payment comes due and the core cannot cover it, nothing is released. The faction gets 5 real days (configurable) to deposit coins, and members are told. Depositing enough at any point in that window pays the debt straight away. If the grace runs out, the faction pays what it can afford and loses the rest, outermost chunks first.
+- Vault tab. The Territory Table screen has a new Vault tab with real inventory slots. Put coins in the slots (or shift-click them from your inventory), then press Deposit. While you hold coins in the slots it shows what they are worth, what each item is worth as upkeep time (as a list, and in the item tooltip), how much time they add, and how long the core is covered in total. Times are shown instead of coin totals. Coins left in the slots when you close the screen are handed back. Right-clicking the table holding coins still works too.
+- Connected claims. New land has to touch the owner's existing land. The first claim (the home base) has to be within 8 chunks of the player.
+- Low upkeep warning. When the core can only cover warnHours more hours (24 by default) every online member is warned, again every warnRepeatMinutes, and again at login. The Faction tab shows the state in red.
+- Faction access. Owners and officers get a Permissions tab with switches for who may use doors, trapdoors and fence gates, who may use crafting tables and other screens that store nothing (each: members only, allies too, or everyone), and who may add to the faction bank (all members by default, officers, or owner only). Chests and other containers always stay members only.
+- Contributions. The Vault tab lists the top contributors and your own total, as time.
+- Explosions are always allowed in faction and personal claims, whatever the config lists. Safezones and warzones never allow them, and a safezone's Damage switch can.
+- Core blown up. If a faction's core table is destroyed by an explosion, every claim the faction holds is released at once in every dimension and its members are told. Breaking the table by hand keeps the 5 day grace. Disbanding a faction also releases all of its faction claims, and personal claims are kept.
+- PvP is never switched off by a claim. Faction and personal claims cannot stop players hurting each other, whatever the config lists. Only a safezone can, through its Attack switch.
+- Mounts can be ridden inside claims, including safezones (allowMounts, on by default). Sneaking, or holding a saddle, horse armor, food, a lead or a name tag, still follows the claim rules.
+- Wars through WarNTaxes. While a WarNTaxes war is in its fighting phase, the factions on each side are at war: they can open chests and use doors, crafting tables and other blocks in each other's claims,. Breaking and placing blocks stay locked unless allowBreak or allowPlace is on. Nobody loses land. WarNTaxes is optional, and without it nothing changes. The [war] section turns each part on or off.
+- Warzones have no natural mob spawns at all (natural spawns, patrols, chunk generation; spawners still work). [warzone] blockNaturalSpawns turns it off.
+- Safezones stop hostile mobs from spawning (natural spawns, spawners, patrols, chunk generation). Spawn eggs, commands, dispensers, breeding and spell summons are never touched. blockAllMobSpawns stops every mob. Inside a Jake's World Guard zone, World Guard decides.
+- Territory Table is now the only way to claim. The /claim commands that claim or unclaim land are gone (pos1, pos2, personal, faction, factionPoints, unclaimFaction, admin, unclaimAdmin). /claim whereAmI and /claim resetUnclaimedChunks remain.
+- Faction tab shows claims used, the core's coins against what is due, and the time until the next payment or the grace left.
+
+SAFEZONES, WARZONES AND WORLD GUARD (operators only)
+- Admin claims are now called Safezones, and Warzone is a new claim type next to them in the Territory Table. The old Plot type is gone: a safezone is one claim type now.
+- A Safezone is always lime green on every map, and no faction, personal claim or warzone can use that green: the server refuses a colour in the lime range, and any faction that ends up on one (for example through /faction setColor, or from an earlier release) is moved to a blue-green. It is protected by Holdfast Factions through the switches in the Permissions tab, except inside a zone created in it with Jake's World Guard (modId jakesworldguard). Inside a World Guard zone Holdfast Factions enforces nothing, so World Guard's flags, members and priorities decide there, and only there. The rest of the safezone keeps following the switches. Without World Guard installed, the whole safezone follows the switches. The Permissions tab shows a note about this for every safezone when World Guard is installed.
+- A Warzone is an area that nobody can claim. It is always a dark red on every map, and nothing else can use that shade: the colour picker offers a brighter red for factions, the server refuses a colour too close to the warzone red, and any faction that ends up on it (for example through /faction setColor, or from an earlier release) is moved to a brighter red. A warzone has no Permissions entry and its rules cannot be edited. Blocks cannot be broken or placed and explosions, mob griefing and pistons are off, but doors, chests and entities can be used, and trusted players get no exceptions. PvP is always on, except between members of the same faction (even if that faction allows friendly fire). Allies can fight each other there. Warzones are never handed to World Guard. PvP needs pvp=true in server.properties.
+
+MAP AND TABLE
+- Drag to pan the map. Shift + drag paints or releases chunks. The map is larger. Claims no longer have grid lines between neighbouring chunks, only an outline around the edge of each group.
+- The Territory Table uses its own textures instead of the enchanting table model.
+
+REMOVED
+- Buying claims, the rising claim price, refunds and the SDM Economy hook.
+- All combat land loss: Territory's kill penalties and the core's own PvP kill-steals-land handler.
+- /factionbuy and the efwarborn add-on.
+- MineColonies colony protection, /territory colony-overlaps and /territory refunds.
+- The adminDefaultColor config option and the safezone colour picker. Safezones are always lime green and warzones always dark red.
+
+FIXES
+- Claims from the table ignored the core's claim-dimension lists. They are now enforced.
+- A crafted packet could claim a first chunk anywhere in the world. First claims are now limited to 8 chunks around the player.
+- Disbanding a faction now clears its core and upkeep records.
+- The "no trusted players" line in the Permissions tab is drawn in the right place.
+- Faction leaders could not place personal claims. leaderClaimsBecomeFaction (founding a faction turns the founder's personal claims into faction claims and stops the leader claiming personally) is now off by default, so everyone can keep personal claims whether or not they are in or lead a faction. An existing territory-server.toml keeps its old value until you edit it.
+- Leaving a world or stopping a server threw "Cannot get config value before config is loaded" from the faction core's config handlers. They now ignore the config unload event.
+
+CONFIG (territory-server.toml)
+- [upkeep] items (a list of id=value, the six Numismatics coins by default), costPerChunk (0 turns upkeep off), intervalMinutes, graceDays (default 5, 0 releases immediately), unitName, fallbackItems (the ores and gems used when none of the main items exist) and fallbackUnitName.
+- claimBufferChunks (default 1) keeps a one chunk gap between different owners' land. Set it to 0 to let borders touch. A territory-server.toml that already exists keeps its old value until you edit or delete it.
+- [upkeep] warnHours (default 24, 0 turns warnings off) and warnRepeatMinutes (default 180). [safezone] blockMonsterSpawns (default true) and blockAllMobSpawns (default false). [warzone] blockNaturalSpawns (default true). [war] enabled, allowBreak (default false), allowPlace (default false), allowUse, allowContainers (default true). allowMounts (default true). leaderClaimsBecomeFaction now defaults to false.
