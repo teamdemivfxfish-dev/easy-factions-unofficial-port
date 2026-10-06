@@ -4,6 +4,19 @@ Holdfast Factions is a NeoForge 1.21.1 faction and territory mod. It is one mod 
 
 Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by Leon (leon_mout) and cnlimiter, released under the GNU General Public License v3.0: https://github.com/leon-o/MineTerritory
 
+## Upstream and credit
+
+Holdfast Factions is built on **Easy Factions**, created by **OverWatter** and released under the Mozilla Public License 2.0.
+
+- Upstream repository: https://github.com/kard3n/easy_factions
+- Upstream on CurseForge: https://www.curseforge.com/minecraft/mc-mods/easy-factions
+
+This is an unofficial port and rework. It is not affiliated with or endorsed by the upstream author, and the faction core keeps the MPL-2.0 license. The modified core sources are published here, in `core/patches`, as the license requires.
+
+**MineTerritory**, the base of the Territory Table, was created by **Leon** (leon_mout) with **cnlimiter** and is released under the GNU General Public License v3.0: https://github.com/leon-o/MineTerritory
+
+If you redistribute this, please keep the upstream attribution for both projects.
+
 ## How land works
 
 - The Territory Table is the only way to claim. There are no commands that claim or unclaim land.
