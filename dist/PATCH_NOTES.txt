@@ -50,6 +50,7 @@ REMOVED
 - The adminDefaultColor config option and the safezone colour picker. Safezones are always lime green and warzones always dark red.
 
 FIXES
+- A faction with no core table when its grace ran out lost all its land with only a generic "upkeep short" message. It is now told that it had no core table, how many chunks were released, and to place a Territory Table.
 - Claims from the table ignored the core's claim-dimension lists. They are now enforced.
 - A crafted packet could claim a first chunk anywhere in the world. First claims are now limited to 8 chunks around the player.
 - Disbanding a faction now clears its core and upkeep records.

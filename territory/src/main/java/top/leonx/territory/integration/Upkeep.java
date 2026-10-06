@@ -439,6 +439,14 @@ public final class Upkeep {
             int released = lost > 0 ? FactionsBridge.releaseOutermost(server, faction, core, lost) : 0;
             cores.setNextDue(faction, now + TerritoryConfig.upkeepIntervalTicks());
             cores.setGraceUntil(faction, 0L);
+            if (core == null) {
+                FactionsBridge.notifyFaction(server, faction, Component.literal(
+                        faction + " had no core table when upkeep came due, so all " + released + " claimed "
+                                + (released == 1 ? "chunk was" : "chunks were")
+                                + " released. Place a Territory Table to claim land again.")
+                        .withStyle(ChatFormatting.RED));
+                return;
+            }
             FactionsBridge.notifyFaction(server, faction, Component.literal(
                     "Upkeep short: " + faction + " could not pay for all its land and lost its outermost "
                             + released + (released == 1 ? " chunk." : " chunks."))
