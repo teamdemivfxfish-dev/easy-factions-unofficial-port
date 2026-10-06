@@ -1,3 +1,21 @@
+Holdfast Factions 1.0.1
+Jar: holdfast_factions-neoforge-1.0.1.jar
+Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by Leon (leon_mout) and cnlimiter.
+
+CHANGES SINCE 1.0.0
+- 12 hour grace. The grace period before unpaid land is released is now 12 real hours by default instead of 5 days. It is set by graceHours, which replaces graceDays.
+- Rising upkeep (optional). [upkeep] costTiers lists a price for each chunk in order: the first chunk costs the first number, the second the second, and every chunk past the end of the list costs the last number, for example [2, 2, 4, 4, 6, 8]. The list is empty by default, so every chunk keeps costing costPerChunk. The Territory Table's times and payments use the same prices.
+- A faction with no core table when its grace ran out lost all its land with only a generic "upkeep short" message. It is now told that it had no core table, how many chunks were released, and to place a Territory Table.
+
+CONFIG (territory-server.toml)
+- graceDays is replaced by graceHours (default 12, 0 releases immediately). Servers that changed graceDays must set graceHours again.
+- [upkeep] costTiers (default empty, which means the flat costPerChunk). costPerChunk 0 still turns upkeep off.
+
+TO UPDATE
+- Replace the jar on the server and on every client at the same time. The Territory Table sends the upkeep prices to the client, so a 1.0.0 client cannot open the table of a 1.0.1 server.
+
+--------------------------------------------------------------------------------
+
 Holdfast Factions 1.0.0
 Jar: holdfast_factions-neoforge-1.0.0.jar
 Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by Leon (leon_mout) and cnlimiter.
@@ -17,15 +35,14 @@ NEW
 - Only faction land costs upkeep. Safezones and warzones are never counted, charged or released, and personal claims are free too.
 - Create: Numismatics is optional. Without it, upkeep is paid in ores and gems instead: raw copper, iron and gold, their ingots, emeralds, diamonds and netherite ingots, counted in credits (a 50-chunk faction pays 200 credits a day, about 13 iron ingots). Both item lists and their values are configurable. When Numismatics is installed, only its coins are accepted.
 - Faction core. Every faction has exactly one Territory Table that acts as its core and vault. Right-click it holding coins to deposit. The coins are physical: they stay inside the table and drop if it is broken. It works like a Rust tool cupboard: upkeep just uses up what is inside. Items are used whole, cheapest first, and no change is given back. Any value beyond what is due stays in the table as credit and counts toward the next payments, so a big coin is never wasted (a sun coin covers about 20 days for a 50-chunk faction). Breaking the table drops the items but the stored credit is lost. A faction cannot place a second table.
-- Rising upkeep (optional). [upkeep] costTiers lists a price for each chunk in order: the first chunk costs the first number, the second the second, and every chunk past the end of the list costs the last number, for example [2, 2, 4, 4, 6, 8]. The list is empty by default, so every chunk keeps costing costPerChunk. The Territory Table's times and payments use the same prices.
-- 12 hour grace. When a payment comes due and the core cannot cover it, nothing is released. The faction gets 12 real hours (configurable) to deposit coins, and members are told. Depositing enough at any point in that window pays the debt straight away. If the grace runs out, the faction pays what it can afford and loses the rest, outermost chunks first.
+- 5 day grace. When a payment comes due and the core cannot cover it, nothing is released. The faction gets 5 real days (configurable) to deposit coins, and members are told. Depositing enough at any point in that window pays the debt straight away. If the grace runs out, the faction pays what it can afford and loses the rest, outermost chunks first.
 - Vault tab. The Territory Table screen has a new Vault tab with real inventory slots. Put coins in the slots (or shift-click them from your inventory), then press Deposit. While you hold coins in the slots it shows what they are worth, what each item is worth as upkeep time (as a list, and in the item tooltip), how much time they add, and how long the core is covered in total. Times are shown instead of coin totals. Coins left in the slots when you close the screen are handed back. Right-clicking the table holding coins still works too.
 - Connected claims. New land has to touch the owner's existing land. The first claim (the home base) has to be within 8 chunks of the player.
 - Low upkeep warning. When the core can only cover warnHours more hours (24 by default) every online member is warned, again every warnRepeatMinutes, and again at login. The Faction tab shows the state in red.
 - Faction access. Owners and officers get a Permissions tab with switches for who may use doors, trapdoors and fence gates, who may use crafting tables and other screens that store nothing (each: members only, allies too, or everyone), and who may add to the faction bank (all members by default, officers, or owner only). Chests and other containers always stay members only.
 - Contributions. The Vault tab lists the top contributors and your own total, as time.
 - Explosions are always allowed in faction and personal claims, whatever the config lists. Safezones and warzones never allow them, and a safezone's Damage switch can.
-- Core blown up. If a faction's core table is destroyed by an explosion, every claim the faction holds is released at once in every dimension and its members are told. Breaking the table by hand keeps the 12 hour grace. Disbanding a faction also releases all of its faction claims, and personal claims are kept.
+- Core blown up. If a faction's core table is destroyed by an explosion, every claim the faction holds is released at once in every dimension and its members are told. Breaking the table by hand keeps the 5 day grace. Disbanding a faction also releases all of its faction claims, and personal claims are kept.
 - PvP is never switched off by a claim. Faction and personal claims cannot stop players hurting each other, whatever the config lists. Only a safezone can, through its Attack switch.
 - Mounts can be ridden inside claims, including safezones (allowMounts, on by default). Sneaking, or holding a saddle, horse armor, food, a lead or a name tag, still follows the claim rules.
 - Wars through WarNTaxes. While a WarNTaxes war is in its fighting phase, the factions on each side are at war: they can open chests and use doors, crafting tables and other blocks in each other's claims,. Breaking and placing blocks stay locked unless allowBreak or allowPlace is on. Nobody loses land. WarNTaxes is optional, and without it nothing changes. The [war] section turns each part on or off.
@@ -51,7 +68,6 @@ REMOVED
 - The adminDefaultColor config option and the safezone colour picker. Safezones are always lime green and warzones always dark red.
 
 FIXES
-- A faction with no core table when its grace ran out lost all its land with only a generic "upkeep short" message. It is now told that it had no core table, how many chunks were released, and to place a Territory Table.
 - Claims from the table ignored the core's claim-dimension lists. They are now enforced.
 - A crafted packet could claim a first chunk anywhere in the world. First claims are now limited to 8 chunks around the player.
 - Disbanding a faction now clears its core and upkeep records.
@@ -60,8 +76,6 @@ FIXES
 - Leaving a world or stopping a server threw "Cannot get config value before config is loaded" from the faction core's config handlers. They now ignore the config unload event.
 
 CONFIG (territory-server.toml)
-- graceDays is replaced by graceHours. Servers that changed graceDays must set graceHours again.
-- [upkeep] costTiers (default empty, which means the flat costPerChunk). costPerChunk 0 still turns upkeep off.
-- [upkeep] items (a list of id=value, the six Numismatics coins by default), costPerChunk (0 turns upkeep off), intervalMinutes, graceHours (default 12, 0 releases immediately), unitName, fallbackItems (the ores and gems used when none of the main items exist) and fallbackUnitName.
+- [upkeep] items (a list of id=value, the six Numismatics coins by default), costPerChunk (0 turns upkeep off), intervalMinutes, graceDays (default 5, 0 releases immediately), unitName, fallbackItems (the ores and gems used when none of the main items exist) and fallbackUnitName.
 - claimBufferChunks (default 1) keeps a one chunk gap between different owners' land. Set it to 0 to let borders touch. A territory-server.toml that already exists keeps its old value until you edit or delete it.
 - [upkeep] warnHours (default 24, 0 turns warnings off) and warnRepeatMinutes (default 180). [safezone] blockMonsterSpawns (default true) and blockAllMobSpawns (default false). [warzone] blockNaturalSpawns (default true). [war] enabled, allowBreak (default false), allowPlace (default false), allowUse, allowContainers (default true). allowMounts (default true). leaderClaimsBecomeFaction now defaults to false.
