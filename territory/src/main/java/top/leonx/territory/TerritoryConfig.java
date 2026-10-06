@@ -41,6 +41,10 @@ public final class TerritoryConfig {
    public static final BooleanValue WAR_ALLOW_PLACE;
    public static final BooleanValue WAR_ALLOW_USE;
    public static final BooleanValue WAR_ALLOW_CONTAINERS;
+   public static final BooleanValue DEPTH_ENABLED;
+   public static final ConfigValue<List<? extends Number>> DEPTH_BLAST_SURVIVAL;
+   public static final BooleanValue DEPTH_OPEN_OUTER_RING;
+   public static final BooleanValue DEPTH_ALLOW_TNT;
    public static final IntValue MIN_FACTION_MEMBERS;
    public static final IntValue CLAIM_BUFFER_CHUNKS;
    public static final BooleanValue LEADER_CLAIMS_BECOME_FACTION;
@@ -150,6 +154,29 @@ public final class TerritoryConfig {
 
    public static long upkeepWarnRepeatTicks() {
       return (long)((Integer)UPKEEP_WARN_REPEAT_MINUTES.get()).intValue() * 1200L;
+   }
+
+   public static boolean depthEnabled() {
+      return (Boolean)DEPTH_ENABLED.get();
+   }
+
+   public static double[] blastSurvival() {
+      List<? extends Number> chances = DEPTH_BLAST_SURVIVAL.get();
+      double[] out = new double[chances.size()];
+
+      for (int i = 0; i < out.length; i++) {
+         out[i] = chances.get(i).doubleValue();
+      }
+
+      return out;
+   }
+
+   public static boolean openOuterRing() {
+      return (Boolean)DEPTH_OPEN_OUTER_RING.get();
+   }
+
+   public static boolean allowTnt() {
+      return (Boolean)DEPTH_ALLOW_TNT.get();
    }
 
    public static boolean warEnabled() {
@@ -689,6 +716,47 @@ public final class TerritoryConfig {
             new String[]{"Enemies may open chests and other containers inside each other's claims during a war. On by default."}
          )
          .define("allowContainers", true);
+      b.pop();
+      b.comment(
+            new String[]{
+               "Depth: how far inside its own land a chunk of a faction's claim sits.",
+               "",
+               "From a chunk, count the chunks of the same faction in a straight line north, south, east and west",
+               "before the land stops being theirs. The shortest of those four counts is the chunk's depth.",
+               "Chunks on the edge of a claim are depth 0, the ring just inside them depth 1, and so on.",
+               "The Territory Table map shows each chunk's depth.",
+               "",
+               "Only faction claims have depth. Safezones, warzones and personal claims are not affected."
+            }
+         )
+         .push("depth");
+      DEPTH_ENABLED = b.comment(new String[]{"Turn the whole depth system on or off: blast survival, the open outer ring and TNT."}).define("enabled", true);
+      DEPTH_BLAST_SURVIVAL = b.comment(
+            new String[]{
+               "Chance, from 0.0 to 1.0, that a block inside a faction's claim survives an explosion, by depth.",
+               "The first number is depth 0, the second depth 1 and so on. Chunks deeper than the list use the last number.",
+               "Default [0.0, 0.5, 1.0]: edge chunks take the whole blast, the ring inside loses about half its blocks,",
+               "and everything deeper is immune. The faction's core table is never protected, so a blast that",
+               "reaches it still releases the faction's land. An empty list turns blast survival off."
+            }
+         )
+         .defineListAllowEmpty(
+            "blastSurvival", List.<Number>of(0.0, 0.5, 1.0), () -> 0.0, o -> o instanceof Number n && n.doubleValue() >= 0.0 && n.doubleValue() <= 1.0
+         );
+      DEPTH_OPEN_OUTER_RING = b.comment(
+            new String[]{
+               "Anyone may place and break blocks in depth 0 chunks of a faction's claim, so raiders can work on its edge.",
+               "The core table cannot be broken by hand there. Deeper chunks stay protected by restrictedInteractions."
+            }
+         )
+         .define("openOuterRing", true);
+      DEPTH_ALLOW_TNT = b.comment(
+            new String[]{
+               "Anyone may place and light TNT anywhere inside a faction's claim, whatever restrictedInteractions says.",
+               "Blast survival above decides what the explosion can reach."
+            }
+         )
+         .define("allowTnt", true);
       b.pop();
       SPEC = b.build();
    }

@@ -93,6 +93,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private final Set<Long> stagedAdd = new HashSet<>();
     private final Set<Long> stagedRemove = new HashSet<>();
     private final List<Cluster> clusters = new ArrayList<>();
+    private final Map<Long, TerritoryDataS2C.ClaimEntry> claimAt = new HashMap<>();
     private TerritoryDataS2C data;
     private boolean initialized = false;
     private String lastTypedName = null;
@@ -214,11 +215,13 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         mineSet.clear();
         forbidden.clear();
         clusters.clear();
+        claimAt.clear();
         if (data == null) return;
         int mineKind = admin() || warzone() ? FactionsBridge.KIND_ADMIN
                 : (faction() ? FactionsBridge.KIND_MINE_FACTION : FactionsBridge.KIND_MINE_CORE);
         for (TerritoryDataS2C.ClaimEntry e : data.claims()) {
             long key = ChunkPos.asLong(e.x(), e.z());
+            claimAt.put(key, e);
             if (e.kind() == mineKind) mineSet.add(key);
             else forbidden.add(key);
         }
@@ -1004,6 +1007,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
         if (tab == TAB_MAP) {
             renderMapPage(g);
             renderBrush(g, mouseX, mouseY);
+            renderDepthHover(g, mouseX, mouseY);
         } else if (tab == TAB_PERMS) {
             renderPermsPage(g, mouseX, mouseY);
         } else if (tab == TAB_VAULT) {
@@ -1204,6 +1208,19 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
                 ? "gui.territory.brush.releasing" : "gui.territory.brush.claiming"), paintErase ? eraseColor : claimColor);
     }
 
+    private void renderDepthHover(GuiGraphics g, int mouseX, int mouseY) {
+        if (dragging || data == null || !overMap(mouseX, mouseY)) return;
+        TerritoryDataS2C.ClaimEntry e = claimAt.get(ChunkPos.asLong(chunkXAt(mouseX), chunkZAt(mouseY)));
+        if (e == null || e.depth() < 0) return;
+        cursorLabel(g, mouseX, mouseY, Component.translatable("gui.territory.depth", e.depth(), e.survivePercent()), 0xFFFFFFFF);
+    }
+
+    private void drawDepth(GuiGraphics g, TerritoryDataS2C.ClaimEntry e, double leftX, double topZ, float cell, int mx0, int my0) {
+        int px = mx0 + Math.round((float) ((e.x() + 0.5 - leftX) * cell));
+        int pz = my0 + Math.round((float) ((e.z() + 0.5 - topZ) * cell));
+        g.drawCenteredString(font, String.valueOf(e.depth()), px, pz - 4, 0xCCFFFFFF);
+    }
+
     private void cursorLabel(GuiGraphics g, int mouseX, int mouseY, Component text, int color) {
         int w = font.width(text);
         int tx = mouseX + 10, ty = mouseY - 4;
@@ -1244,6 +1261,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
                 long key = ChunkPos.asLong(e.x(), e.z());
                 boolean war = warSet.contains(key);
                 drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, (war ? A_WARZONE : A_FILL) | (e.color() & 0xFFFFFF), false);
+                if (cell >= 12 && e.depth() >= 0) drawDepth(g, e, leftX, topZ, cell, mx0, my0);
                 if (war) outlineBorder(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, 0xFFFF4040, warSet::contains);
                 if (mineSet.contains(key)) {
                     if (stagedRemove.contains(key)) drawCell(g, e.x(), e.z(), leftX, topZ, cell, mx0, my0, A_REMOVE, true);

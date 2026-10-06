@@ -112,6 +112,7 @@
   "gui.territory.brush.hint": "Drag: pan   Shift+drag: paint",
   "gui.territory.brush.claiming": "Claiming…",
   "gui.territory.brush.releasing": "Releasing…",
+  "gui.territory.depth": "Depth %s: %s%% of blocks survive a blast",
   "gui.territory.more": "+%s more",
   "gui.territory.on": "ON",
   "gui.territory.off": "OFF",

@@ -57,6 +57,8 @@ public record TerritoryDataS2C(
             buf.writeByte(e.kind());
             buf.writeInt(e.color());
             buf.writeVarInt(e.ownerIdx());
+            buf.writeByte(e.depth());
+            buf.writeByte(e.survivePercent());
          }
 
          buf.writeVarInt(m.adminZones.size());
@@ -102,7 +104,7 @@ public record TerritoryDataS2C(
          for (int i = 0; i < n; i++) {
             claims.add(
                new TerritoryDataS2C.ClaimEntry(
-                  buf.readVarInt(), buf.readVarInt(), buf.readByte(), buf.readInt(), buf.readVarInt()
+                  buf.readVarInt(), buf.readVarInt(), buf.readByte(), buf.readInt(), buf.readVarInt(), buf.readByte(), buf.readByte()
                )
             );
          }
@@ -156,6 +158,6 @@ public record TerritoryDataS2C(
    ) {
    }
 
-   public static record ClaimEntry(int x, int z, int kind, int color, int ownerIdx) {
+   public static record ClaimEntry(int x, int z, int kind, int color, int ownerIdx, int depth, int survivePercent) {
    }
 }

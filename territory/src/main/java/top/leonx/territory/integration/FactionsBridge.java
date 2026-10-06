@@ -578,6 +578,8 @@ public final class FactionsBridge {
             Faction f = fsm.getFactionByPlayer(player.getUUID());
             String myFaction = f != null ? f.getName() : null;
             String myUuid = player.getUUID().toString();
+            boolean showDepth = TerritoryConfig.depthEnabled();
+            double[] survival = TerritoryConfig.blastSurvival();
 
             for (int x = center.x - radius; x <= center.x + radius; x++) {
                for (int z = center.z - radius; z <= center.z + radius; z++) {
@@ -604,7 +606,9 @@ public final class FactionsBridge {
                            label = claimLabel(server, names, data);
                         }
 
-                        out.add(new FactionsBridge.ClaimCell(x, z, kind, color, label));
+                        int depth = showDepth ? Depth.of(server, dim, pos, DepthMath.DISPLAY_LIMIT) : Depth.NONE;
+                        int survive = depth == Depth.NONE ? 0 : (int)Math.round(DepthMath.chanceAt(survival, depth) * 100.0);
+                        out.add(new FactionsBridge.ClaimCell(x, z, kind, color, label, depth, survive));
                      }
                   }
                }
@@ -957,10 +961,15 @@ public final class FactionsBridge {
    }
 
    public static FactionsBridge.Decision decide(Player player, ResourceKey<Level> dim, BlockPos pos, Interaction interaction) {
+      return decide(player, dim, pos, interaction, false);
+   }
+
+   public static FactionsBridge.Decision decide(Player player, ResourceKey<Level> dim, BlockPos pos, Interaction interaction, boolean tnt) {
       if (player == null || pos == null || handsOff(player.getServer(), dim, pos)) {
          return FactionsBridge.Decision.DEFER;
       } else {
-         return decide(player, dim, new ChunkPos(pos), interaction);
+         FactionsBridge.Decision decision = decide(player, dim, new ChunkPos(pos), interaction);
+         return decision == FactionsBridge.Decision.DENY && Depth.allows(player, dim, pos, interaction, tnt) ? FactionsBridge.Decision.ALLOW : decision;
       }
    }
 
@@ -1230,6 +1239,13 @@ public final class FactionsBridge {
                out.add("Claim: UNCLAIMED. Nothing here is protected by anyone.");
             } else {
                out.add("Claim: " + claim.type + " owned by " + claim.owner + " (" + chunkOwnerDisplay(server, dim, pos) + ")");
+               if (claim.type == ClaimType.FACTION && TerritoryConfig.depthEnabled()) {
+                  int depth = Depth.of(server, dim, pos, DepthMath.DISPLAY_LIMIT);
+                  long survive = Math.round(DepthMath.chanceAt(TerritoryConfig.blastSurvival(), depth) * 100.0);
+                  out.add(
+                     "  depth " + depth + ": " + survive + "% of blocks survive a blast" + (depth == 0 && TerritoryConfig.openOuterRing() ? ", anyone may place and break blocks here" : "")
+                  );
+               }
                if (claim.type == ClaimType.ADMIN) {
                   AdminTerritories.Territory t = AdminTerritories.get(server).governing(dim, pos.toLong());
                   out.add(
@@ -1788,7 +1804,7 @@ public final class FactionsBridge {
    ) {
    }
 
-   public static record ClaimCell(int x, int z, int kind, int color, String label) {
+   public static record ClaimCell(int x, int z, int kind, int color, String label, int depth, int survivePercent) {
    }
 
    public static record Ctx(

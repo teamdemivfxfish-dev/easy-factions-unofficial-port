@@ -347,7 +347,7 @@ public final class TerritoryNet {
                return owners.size() - 1;
             });
 
-            entries.add(new TerritoryDataS2C.ClaimEntry(cell.x(), cell.z(), cell.kind(), cell.color(), idx));
+            entries.add(new TerritoryDataS2C.ClaimEntry(cell.x(), cell.z(), cell.kind(), cell.color(), idx, cell.depth(), cell.survivePercent()));
          }
 
          List<TerritoryDataS2C.AdminZone> zones = new ArrayList<>();

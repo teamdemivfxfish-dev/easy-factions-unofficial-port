@@ -5,14 +5,19 @@ Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by
 CHANGES SINCE 1.0.0
 - 3 day grace. The grace period before unpaid land is released is now 3 real days (72 hours) by default instead of 5 days. It is set by graceHours, which replaces graceDays.
 - Rising upkeep (optional). [upkeep] costTiers lists a price for each chunk in order: the first chunk costs the first number, the second the second, and every chunk past the end of the list costs the last number, for example [2, 2, 4, 4, 6, 8]. The list is empty by default, so every chunk keeps costing costPerChunk. The Territory Table's times and payments use the same prices.
+- Depth. Every chunk of faction land now has a depth: the number of chunks of the same faction in a straight line north, south, east or west (the shortest of the four) before the land stops being theirs. Edge chunks are depth 0, the ring inside them depth 1, and so on. The Territory Table map prints the depth on each chunk and shows it when you hover.
+- Blast survival. By default every block in an edge chunk is destroyed by an explosion as before, about half the blocks in depth 1 survive, and everything deeper is immune. The core table is never protected, so a blast that reaches it still releases all of the faction's land.
+- Open outer ring. Anyone can place and break blocks in depth 0 chunks of a faction's land. The core table cannot be broken by hand.
+- TNT. Anyone can place and light TNT anywhere in faction land.
 - A faction with no core table when its grace ran out lost all its land with only a generic "upkeep short" message. It is now told that it had no core table, how many chunks were released, and to place a Territory Table.
 
 CONFIG (territory-server.toml)
 - graceDays is replaced by graceHours (default 72, 0 releases immediately). Servers that changed graceDays must set graceHours again.
 - [upkeep] costTiers (default empty, which means the flat costPerChunk). costPerChunk 0 still turns upkeep off.
+- New [depth] section: enabled (true), blastSurvival ([0.0, 0.5, 1.0], the chance a block survives an explosion at depth 0, 1, 2 and deeper), openOuterRing (true) and allowTnt (true).
 
 TO UPDATE
-- Replace the jar on the server and on every client at the same time. The Territory Table sends the upkeep prices to the client, so a 1.0.0 client cannot open the table of a 1.0.1 server.
+- Replace the jar on the server and on every client at the same time. The Territory Table sends the upkeep prices and each chunk's depth to the client, so a 1.0.0 client cannot open the table of a 1.0.1 server.
 
 --------------------------------------------------------------------------------
 

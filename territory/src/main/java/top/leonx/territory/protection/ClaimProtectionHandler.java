@@ -15,8 +15,11 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BucketItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.MobBucketItem;
+import net.minecraft.world.item.Items;
 import net.minecraft.world.level.ChunkPos;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.LevelResource;
 import net.neoforged.bus.api.EventPriority;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -37,6 +40,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import top.leonx.territory.TerritoryConfig;
 import top.leonx.territory.TerritoryMod;
+import top.leonx.territory.integration.Depth;
+import top.leonx.territory.integration.DepthMath;
 import top.leonx.territory.integration.FactionsBridge;
 import top.leonx.territory.integration.Upkeep;
 import top.leonx.territory.world.Interaction;
@@ -117,7 +122,7 @@ public final class ClaimProtectionHandler {
    )
    public static void onBlockPlace(EntityPlaceEvent event) {
       if (event.getEntity() instanceof Player player) {
-         apply(player, event.getPos(), Interaction.PLACE_BLOCK, event::setCanceled, event.isCanceled());
+         apply(player, event.getPos(), Interaction.PLACE_BLOCK, event::setCanceled, event.isCanceled(), event.getPlacedBlock().is(Blocks.TNT));
       }
    }
 
@@ -129,7 +134,7 @@ public final class ClaimProtectionHandler {
       Interaction type = isBucket(event.getItemStack())
          ? Interaction.USE_BUCKET
          : BlockKinds.rightClickKind(event.getLevel(), event.getPos());
-      apply(event.getEntity(), event.getPos(), type, event::setCanceled, event.isCanceled());
+      apply(event.getEntity(), event.getPos(), type, event::setCanceled, event.isCanceled(), isTntLighting(event.getLevel().getBlockState(event.getPos()), event.getItemStack()));
    }
 
    @SubscribeEvent(
@@ -233,6 +238,10 @@ public final class ClaimProtectionHandler {
                }
             }
 
+            if (TerritoryConfig.depthEnabled()) {
+               thinByDepth(event.getLevel(), server, dim, affected);
+            }
+
             for (BlockPos pos : new ArrayList<>(affected)) {
                if (event.getLevel().getBlockState(pos).is(TerritoryMod.TERRITORY_TABLE.get())) {
                   Upkeep.coreBlownUp(server, dim, pos);
@@ -240,6 +249,27 @@ public final class ClaimProtectionHandler {
             }
          }
       }
+   }
+
+   private static void thinByDepth(Level level, MinecraftServer server, ResourceKey<Level> dim, List<BlockPos> affected) {
+      double[] chances = TerritoryConfig.blastSurvival();
+      if (chances.length > 0) {
+         int limit = DepthMath.limitFor(chances);
+         Map<Long, Integer> depths = new HashMap<>();
+         affected.removeIf(pos -> {
+            if (level.getBlockState(pos).is(TerritoryMod.TERRITORY_TABLE.get()) || FactionsBridge.handsOff(server, dim, pos)) {
+               return false;
+            }
+
+            ChunkPos chunk = new ChunkPos(pos);
+            int depth = depths.computeIfAbsent(chunk.toLong(), k -> Depth.of(server, dim, chunk, limit));
+            return depth != Depth.NONE && DepthMath.survives(chances, depth, level.random.nextDouble());
+         });
+      }
+   }
+
+   private static boolean isTntLighting(BlockState state, ItemStack stack) {
+      return state.is(Blocks.TNT) && (stack.is(Items.FLINT_AND_STEEL) || stack.is(Items.FIRE_CHARGE));
    }
 
    private static FactionsBridge.Decision ruling(MinecraftServer server, ResourceKey<Level> dim, BlockPos pos, Map<Long, FactionsBridge.Decision> cache) {
@@ -252,8 +282,12 @@ public final class ClaimProtectionHandler {
    }
 
    private static void apply(Player player, BlockPos pos, Interaction interaction, ClaimProtectionHandler.Canceller canceller, boolean currentlyCanceled) {
+      apply(player, pos, interaction, canceller, currentlyCanceled, false);
+   }
+
+   private static void apply(Player player, BlockPos pos, Interaction interaction, ClaimProtectionHandler.Canceller canceller, boolean currentlyCanceled, boolean tnt) {
       if (player != null && pos != null && !player.level().isClientSide()) {
-         FactionsBridge.Decision decision = FactionsBridge.decide(player, player.level().dimension(), pos, interaction);
+         FactionsBridge.Decision decision = FactionsBridge.decide(player, player.level().dimension(), pos, interaction, tnt);
          if (decision == FactionsBridge.Decision.DENY) {
             if (!currentlyCanceled) {
                warn(player, pos);
