@@ -97,4 +97,4 @@ Only claims start over, on purpose, so that no existing base is touched by upkee
 - One internal save file, the objectives one, keeps its earlier spelling so that its data carries over. Players never see it.
 - Config files are named after the mod id, so the old ones are ignored and the new ones start at their defaults. To keep tuned settings, copy the values across by hand into the new `holdfast_factions-*.toml` files. `territory-server.toml` keeps its name and its values.
 - The keybind for the faction menu resets once.
-- Maps and Quills (modId `warpaint`) still requires the old Easy Factions mod id and reads its classes by their old package, so it cannot run next to Holdfast Factions until its author updates it.
+- Maps and Quills (modId `warpaint`) 0.1.3 depends on `holdfast_factions`. Version 0.1.0 required the old Easy Factions mod id and cannot run next to Holdfast Factions.
