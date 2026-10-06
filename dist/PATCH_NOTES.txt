@@ -3,12 +3,12 @@ Jar: holdfast_factions-neoforge-1.0.1.jar
 Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by Leon (leon_mout) and cnlimiter.
 
 CHANGES SINCE 1.0.0
-- 12 hour grace. The grace period before unpaid land is released is now 12 real hours by default instead of 5 days. It is set by graceHours, which replaces graceDays.
+- 3 day grace. The grace period before unpaid land is released is now 3 real days (72 hours) by default instead of 5 days. It is set by graceHours, which replaces graceDays.
 - Rising upkeep (optional). [upkeep] costTiers lists a price for each chunk in order: the first chunk costs the first number, the second the second, and every chunk past the end of the list costs the last number, for example [2, 2, 4, 4, 6, 8]. The list is empty by default, so every chunk keeps costing costPerChunk. The Territory Table's times and payments use the same prices.
 - A faction with no core table when its grace ran out lost all its land with only a generic "upkeep short" message. It is now told that it had no core table, how many chunks were released, and to place a Territory Table.
 
 CONFIG (territory-server.toml)
-- graceDays is replaced by graceHours (default 12, 0 releases immediately). Servers that changed graceDays must set graceHours again.
+- graceDays is replaced by graceHours (default 72, 0 releases immediately). Servers that changed graceDays must set graceHours again.
 - [upkeep] costTiers (default empty, which means the flat costPerChunk). costPerChunk 0 still turns upkeep off.
 
 TO UPDATE

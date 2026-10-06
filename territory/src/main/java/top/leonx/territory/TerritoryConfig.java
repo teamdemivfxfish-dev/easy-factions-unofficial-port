@@ -361,10 +361,10 @@ public final class TerritoryConfig {
             new String[]{
                "Real-time hours a faction has to pay after a payment it cannot cover comes due.",
                "During the grace period nothing is released, and depositing items at the core pays the debt.",
-               "Default 12. Set to 0 to release land immediately at the payment. Replaces the old graceDays key."
+               "Default 72 (3 days). Set to 0 to release land immediately at the payment. Replaces the old graceDays key."
             }
          )
-         .defineInRange("graceHours", 12, 0, 8760);
+         .defineInRange("graceHours", 72, 0, 8760);
       UPKEEP_UNIT = b.comment(new String[]{"Name shown in the Territory Table for the base unit."}).define("unitName", "spurs");
       UPKEEP_FALLBACK_ITEMS = b.comment(
             new String[]{
