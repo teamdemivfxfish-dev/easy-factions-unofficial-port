@@ -29,7 +29,7 @@ public final class TerritoryConfig {
    public static final ConfigValue<String> UPKEEP_UNIT;
    public static final ConfigValue<List<? extends String>> UPKEEP_FALLBACK_ITEMS;
    public static final ConfigValue<String> UPKEEP_FALLBACK_UNIT;
-   public static final IntValue UPKEEP_GRACE_DAYS;
+   public static final IntValue UPKEEP_GRACE_HOURS;
    public static final IntValue UPKEEP_WARN_HOURS;
    public static final IntValue UPKEEP_WARN_REPEAT_MINUTES;
    public static final BooleanValue SAFEZONE_BLOCK_MONSTER_SPAWNS;
@@ -129,7 +129,7 @@ public final class TerritoryConfig {
    }
 
    public static long upkeepGraceTicks() {
-      return (long)((Integer)UPKEEP_GRACE_DAYS.get()).intValue() * 1440L * 1200L;
+      return (long)((Integer)UPKEEP_GRACE_HOURS.get()).intValue() * 60L * 1200L;
    }
 
    public static long upkeepWarnMinutes() {
@@ -336,14 +336,14 @@ public final class TerritoryConfig {
             new String[]{"Real-time minutes between upkeep payments. Default 1440 = once a day.", "The clock only runs while the server is running."}
          )
          .defineInRange("intervalMinutes", 1440, 1, 525600);
-      UPKEEP_GRACE_DAYS = b.comment(
+      UPKEEP_GRACE_HOURS = b.comment(
             new String[]{
-               "Real-time days a faction has to pay after a payment it cannot cover comes due.",
+               "Real-time hours a faction has to pay after a payment it cannot cover comes due.",
                "During the grace period nothing is released, and depositing items at the core pays the debt.",
-               "Default 5. Set to 0 to release land immediately at the payment."
+               "Default 12. Set to 0 to release land immediately at the payment. Replaces the old graceDays key."
             }
          )
-         .defineInRange("graceDays", 5, 0, 365);
+         .defineInRange("graceHours", 12, 0, 8760);
       UPKEEP_UNIT = b.comment(new String[]{"Name shown in the Territory Table for the base unit."}).define("unitName", "spurs");
       UPKEEP_FALLBACK_ITEMS = b.comment(
             new String[]{
