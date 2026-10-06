@@ -25,6 +25,7 @@ public final class TerritoryConfig {
    public static final ModConfigSpec SPEC;
    public static final ConfigValue<List<? extends String>> UPKEEP_ITEMS;
    public static final IntValue UPKEEP_COST_PER_CHUNK;
+   public static final ConfigValue<List<? extends Integer>> UPKEEP_COST_TIERS;
    public static final IntValue UPKEEP_INTERVAL_MINUTES;
    public static final ConfigValue<String> UPKEEP_UNIT;
    public static final ConfigValue<List<? extends String>> UPKEEP_FALLBACK_ITEMS;
@@ -126,6 +127,17 @@ public final class TerritoryConfig {
 
    public static int upkeepCostPerChunk() {
       return (Integer)UPKEEP_COST_PER_CHUNK.get();
+   }
+
+   public static int[] upkeepCostTiers() {
+      List<? extends Integer> tiers = UPKEEP_COST_TIERS.get();
+      int[] out = new int[tiers.size()];
+
+      for (int i = 0; i < out.length; i++) {
+         out[i] = tiers.get(i);
+      }
+
+      return out;
    }
 
    public static long upkeepGraceTicks() {
@@ -332,6 +344,15 @@ public final class TerritoryConfig {
             }
          )
          .defineInRange("costPerChunk", 4, 0, 1000000);
+      UPKEEP_COST_TIERS = b.comment(
+            new String[]{
+               "Optional rising upkeep. Empty (the default) means every chunk costs costPerChunk, so nothing changes.",
+               "When you list numbers, the first claimed chunk costs the first number, the second chunk the second,",
+               "and so on. Every chunk past the end of the list costs the last number. Example: [2, 2, 4, 4, 6, 8].",
+               "costPerChunk 0 still turns upkeep off, whatever is listed here."
+            }
+         )
+         .defineListAllowEmpty("costTiers", List.<Integer>of(), () -> 4, o -> o instanceof Integer i && i >= 0 && i <= 1000000);
       UPKEEP_INTERVAL_MINUTES = b.comment(
             new String[]{"Real-time minutes between upkeep payments. Default 1440 = once a day.", "The clock only runs while the server is running."}
          )

@@ -62,8 +62,9 @@ public final class Upkeep {
     }
 
     static long minutesFor(long value, int chunks) {
-        long cost = TerritoryConfig.upkeepCostPerChunk();
-        return cost <= 0L ? 0L : value * intervalMinutes() / (Math.max(1, chunks) * cost);
+        if (TerritoryConfig.upkeepCostPerChunk() <= 0) return 0L;
+        return UpkeepMath.minutesFor(value, chunks, TerritoryConfig.upkeepCostPerChunk(),
+                TerritoryConfig.upkeepCostTiers(), intervalMinutes());
     }
 
     public static String formatMinutes(long minutes) {
@@ -103,8 +104,10 @@ public final class Upkeep {
         return (int) Math.min(Integer.MAX_VALUE, sum);
     }
 
-    private static int dueValue(int chunks) {
-        return (int) Math.min(Integer.MAX_VALUE, (long) chunks * TerritoryConfig.upkeepCostPerChunk());
+    static int dueValue(int chunks) {
+        if (TerritoryConfig.upkeepCostPerChunk() <= 0) return 0;
+        return (int) Math.min(Integer.MAX_VALUE, UpkeepMath.dueValue(chunks, TerritoryConfig.upkeepCostPerChunk(),
+                TerritoryConfig.upkeepCostTiers()));
     }
 
     private static long intervalMinutes() {
@@ -432,8 +435,8 @@ public final class Upkeep {
                 return;
             }
 
-            int affordable = (int) Math.min(chunks, held / cost);
-            int paid = affordable * cost;
+            int affordable = UpkeepMath.affordableChunks(held, chunks, cost, TerritoryConfig.upkeepCostTiers());
+            int paid = dueValue(affordable);
             int lost = chunks - affordable;
             if (paid > 0) settle(table, paid);
             int released = lost > 0 ? FactionsBridge.releaseOutermost(server, faction, core, lost) : 0;

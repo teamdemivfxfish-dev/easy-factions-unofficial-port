@@ -389,7 +389,7 @@ public class TerritoryTableScreen extends AbstractContainerScreen<TerritoryTable
     private long minutesFor(long value, int chunks) {
         FactionInfoS2C fi = factionInfo;
         if (fi == null || menu.costPerChunk <= 0) return 0L;
-        return value * fi.intervalMinutes() / ((long) Math.max(1, chunks) * menu.costPerChunk);
+        return top.leonx.territory.integration.UpkeepMath.minutesFor(value, chunks, menu.costPerChunk, menu.costTiers, fi.intervalMinutes());
     }
 
     private static String itemLabel(String id) {

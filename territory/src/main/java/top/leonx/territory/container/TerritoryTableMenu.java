@@ -26,22 +26,24 @@ public class TerritoryTableMenu extends AbstractContainerMenu {
    public final BlockPos pos;
    public final Map<String, Integer> coinValues;
    public final int costPerChunk;
+   public final int[] costTiers;
    private final SimpleContainer input = new SimpleContainer(INPUT_SLOTS);
    private boolean vaultOpen = false;
 
    public TerritoryTableMenu(int id, Inventory inv, BlockPos pos) {
-      this(id, inv, pos, TerritoryConfig.upkeepValues(), TerritoryConfig.upkeepCostPerChunk());
+      this(id, inv, pos, TerritoryConfig.upkeepValues(), TerritoryConfig.upkeepCostPerChunk(), TerritoryConfig.upkeepCostTiers());
    }
 
    public TerritoryTableMenu(int id, Inventory inv, RegistryFriendlyByteBuf buf) {
-      this(id, inv, buf.readBlockPos(), readValues(buf), buf.readVarInt());
+      this(id, inv, buf.readBlockPos(), readValues(buf), buf.readVarInt(), readTiers(buf));
    }
 
-   private TerritoryTableMenu(int id, Inventory inv, BlockPos pos, Map<String, Integer> coinValues, int costPerChunk) {
+   private TerritoryTableMenu(int id, Inventory inv, BlockPos pos, Map<String, Integer> coinValues, int costPerChunk, int[] costTiers) {
       super(TerritoryMod.TERRITORY_MENU.get(), id);
       this.pos = pos;
       this.coinValues = coinValues;
       this.costPerChunk = costPerChunk;
+      this.costTiers = costTiers;
 
       for (int i = 0; i < INPUT_SLOTS; i++) {
          this.addSlot(new TerritoryTableMenu.CoinSlot(this.input, i, INPUT_X + i * 18, INPUT_Y));
@@ -67,6 +69,21 @@ public class TerritoryTableMenu extends AbstractContainerMenu {
          buf.writeVarInt(value);
       });
       buf.writeVarInt(TerritoryConfig.upkeepCostPerChunk());
+      int[] tiers = TerritoryConfig.upkeepCostTiers();
+      buf.writeVarInt(tiers.length);
+      for (int tier : tiers) {
+         buf.writeVarInt(tier);
+      }
+   }
+
+   private static int[] readTiers(RegistryFriendlyByteBuf buf) {
+      int[] tiers = new int[buf.readVarInt()];
+
+      for (int i = 0; i < tiers.length; i++) {
+         tiers[i] = buf.readVarInt();
+      }
+
+      return tiers;
    }
 
    private static Map<String, Integer> readValues(RegistryFriendlyByteBuf buf) {
