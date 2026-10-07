@@ -6,7 +6,7 @@ Maintained by Xmat5 and Barunn. The Territory Table is based on MineTerritory by
 
 ## Upstream and credit
 
-Holdfast Factions is built on **Easy Factions**, created by **OverWatter** and released under the Mozilla Public License 2.0.
+Holdfast Factions is built on **Easy Factions**, released under the Mozilla Public License 2.0.
 
 - Upstream repository: https://github.com/kard3n/easy_factions
 - Upstream on CurseForge: https://www.curseforge.com/minecraft/mc-mods/easy-factions
